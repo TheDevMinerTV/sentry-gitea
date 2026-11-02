@@ -9,8 +9,9 @@ Multiple owner namespaces may be installed. This is separate from the
 [project plugins](PLUGINS.md), which use personal access tokens.
 
 Advertised features: `ISSUE_BASIC`, `ISSUE_SYNC`, `COMMITS`, `STACKTRACE_LINK`, `CODEOWNERS`.
-There is no blame/commit-context support, no pull-request comment bot and no alert-rule
-ticket action (see [Failures and limitations](#failures-and-limitations)).
+Opt-in blame-based suspect commits come from local git mirrors (see
+[Blame-based suspect commits](#blame-based-suspect-commits)). There is no pull-request comment bot
+and no alert-rule ticket action (see [Failures and limitations](#failures-and-limitations)).
 
 ## Register the Gitea OAuth application
 
@@ -80,6 +81,8 @@ file, into the locally built image, so treat that image as sensitive.
 | `GITEA_WEBHOOK_URL_PREFIX` | Optional; defaults to Sentry's `system.url-prefix`. Base URL **Gitea** uses to reach Sentry for repository webhooks. Normalized like `GITEA_BASE_URL`. See [Reaching Sentry from Gitea](#reaching-sentry-from-gitea). |
 | `TASKWORKER_IMPORTS` | Must include `sentry_gitea.integration.tasks` in web, worker and scheduler processes, so the push backfill and identity refresh tasks (Sentry's existing `integrations` namespace) are registered. |
 | `TASKWORKER_SCHEDULES["gitea-identity-refresh"]` | Recommended. Runs the identity refresh task every 12 hours; see [Tokens and refresh](#tokens-and-refresh). |
+| `GITEA_BLAME_ENABLED` | Optional; default `False`. Turns on blame-based suspect commits; needs `git` in the image. See [Blame-based suspect commits](#blame-based-suspect-commits). |
+| `GITEA_BLAME_MIRROR_DIR` | Optional; default `/data/sentry-gitea/mirrors`. Root of the bare git mirrors. It must be shared by web and taskworker processes; self-hosted mounts the `sentry-data` volume at `/data` in all of them. |
 | `GITEA_PLUGIN_ALLOWED_BASE_URLS` | Used by the [project plugins](PLUGINS.md#allowed-base-urls) only. When unset, the origins of `GITEA_BASE_URL` and `GITEA_PUBLIC_URL` are allowed. |
 
 URLs retain a hosting subpath and are normalized without a trailing slash. They cannot contain user
@@ -365,6 +368,54 @@ otherwise resolve those names against other providers' external users. Previousl
 are kept when a refresh fails. Pushes that change any of these four files trigger Sentry's
 CODEOWNERS auto-sync for imported mappings.
 
+## Blame-based suspect commits
+
+Gitea has no blame API. With `GITEA_BLAME_ENABLED = True`, the provider adds `gitea` to Sentry's
+list of commit-context providers when Sentry loads it, in web and worker processes alike
+(`COMMIT_CONTEXT_INTEGRATION_PROVIDERS` in `sentry.tasks.post_process`), and the installation
+implements Sentry's commit-context interface by running `git blame` on a local mirror. The Sentry
+image has no `git`; install it in `sentry/enhance-image.sh` (see
+[`enhance-image.sh`](../docker/enhance-image.sh) and the README).
+
+For a new issue in a project with a Gitea code mapping, Sentry maps each in-app frame to a file and
+line on the mapping's branch and asks the integration for blame. The integration then works per
+repository:
+
+1. **Mirror.** One bare mirror per Sentry repository, at
+   `<GITEA_BLAME_MIRROR_DIR>/<integration id>/<Gitea repository id>.git`. The Gitea repository ID
+   survives renames. If the mirror does not exist yet, the
+   `sentry_gitea.integration.mirror_repository` task clones it, and this blame skips the
+   repository. Adding a repository in Sentry queues the same task.
+2. **Revision.** A full commit SHA the mirror already has is used directly. Anything else (a branch
+   or tag name, or an unknown commit) fetches all branches and tags first, at most once every
+   5 minutes per mirror, then resolves the name. An unknown revision skips its frames.
+3. **Blame.** `git blame --line-porcelain` runs once per file, with one `-L n,n` per frame line.
+   Author name and email, committer time and the commit summary become Sentry's `CommitInfo`.
+   Missing files and lines past the end of a file are skipped.
+
+Sentry then keeps the most recent commit within 60 days before the issue's first event, stores it
+as a commit of the repository, and records it as the issue's suspect commit.
+
+Clones and fetches use `<GITEA_BASE_URL>/<owner>/<name>.git`, where `owner/name` is looked up by
+repository ID through the API first. The installation's OAuth access token is refreshed if needed
+and passed as `http.extraHeader=Authorization: Bearer …` through git's `GIT_CONFIG_*` environment
+variables. It never appears in argv, in the mirror's `config` (which stores no remote at all), or
+in logs. Git runs with prompts, system and global configuration and hooks disabled, with a timeout
+(60 seconds per fetch or blame, 25 minutes per clone). A file lock next to each mirror serializes
+clone, fetch and delete across processes. A clone goes to a temporary directory and becomes the
+mirror through an atomic rename, so an interrupted clone never looks like a mirror; the next clone
+removes its leftovers.
+
+Deleting a repository in Sentry deletes its mirror once no other live Sentry repository of the same
+installation uses it. Failures are logged as `sentry-gitea: blame failed` with an `operation` and
+IDs; Sentry then records no suspect commit for that issue.
+
+Sentry calls pull-request comment hooks only for providers that implement its PR comment workflow.
+Gitea does not, so no pull-request comments are ever queued.
+
+For a project with a Gitea code mapping, Sentry 26.10 uses blame instead of release-based suspect
+commits once the provider is on its list. That is why the feature is off by default.
+
 ## Failures and limitations
 
 Reads retry once after a token refresh; failed writes return an error and are never automatically
@@ -377,8 +428,8 @@ integration.
 
 Not supported:
 
-- **Blame / commit context:** Gitea has no blame API, so there are no blame-based suspect commits
-  and no suspect-PR comments. Release-based suspect commits can still use imported release commits.
+- **Suspect-PR comments.** Blame-based suspect commits are opt-in (above); Sentry's comments on
+  the pull request that introduced a suspect commit are not supported.
 - **Pull-request comment bot** and **alert-rule ticket actions**.
 - **Inbound comments:** Gitea comments are never imported into Sentry notes.
 - **Bounds:** push backfills stop at 1,000 commits (logged); release ranges over 5,000 commits fail.
@@ -404,7 +455,8 @@ Our logs use `sentry_gitea.integration.*` and the prefixes `sentry-gitea: instal
 `sentry-gitea: token refresh failed`, `sentry-gitea: identity keep-alive` (INFO, with counts),
 `sentry-gitea: webhook rejected` (with `reason` `url`, `integration`, `signature`, `payload` or
 `repository`), `sentry-gitea: webhook ignored`, `sentry-gitea: backfill incomplete` and
-`sentry-gitea: sync failed` (with `operation`).
+`sentry-gitea: sync failed` (with `operation`), `sentry-gitea: blame failed` (with `operation`) and
+`sentry-gitea: blame skipped, mirror not ready` (INFO).
 Diagnostic extras contain IDs, status and error type; they omit request and response bodies,
 tokens, authorization codes, state, verifiers and secrets.
 
@@ -420,6 +472,7 @@ this integration's PKCE verifier and cannot be replayed, but avoid writing them 
 ## Tests
 
 The Sentry-level suite exercises the provider, OAuth identity and refresh, issues, search,
-repositories, webhooks, sync, source links and CODEOWNERS inside the pinned Sentry image. The
+repositories, webhooks, sync, source links, CODEOWNERS and blame (against a real repository served
+over HTTP, through Sentry's `process_commit_context` task) inside the pinned Sentry image. The
 end-to-end suite runs the real OAuth flow, issue actions, webhooks and sync against a self-hosted
 Sentry and Gitea. See [TESTING.md](TESTING.md).

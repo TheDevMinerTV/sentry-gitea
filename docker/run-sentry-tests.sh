@@ -11,6 +11,11 @@ if [[ ${#wheels[@]} != 1 ]]; then
     echo 'Expected one wheel; run make sentry-tests from the repository.' >&2
     exit 2
 fi
+# The blame tests run git, which the Sentry image lacks (as self-hosted's enhance-image.sh adds it).
+if ! command -v git >/dev/null; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq && apt-get install -y -qq --no-install-recommends git >/dev/null
+fi
 python -m pip install --no-deps --no-index --force-reinstall "${wheels[0]}"
 # Let the Sentry pytest plugin initialize Django, including its DB aliases.
 unset DJANGO_SETTINGS_MODULE

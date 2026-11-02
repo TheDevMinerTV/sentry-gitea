@@ -78,6 +78,10 @@ Redis's network namespace (`network_mode: service:redis`). `SENTRY_SKIP_SELENIUM
 browser dependencies, and `SENTRY_SKIP_SERVICE_VALIDATION=1` skips validation of Kafka, Snuba and
 other services these tests do not use.
 
+The Sentry image has no `git`, which the blame tests need, so `docker/run-sentry-tests.sh` installs
+it with `apt-get` before the run (this needs network access from the test container). Those tests
+serve a real repository over git's HTTP protocol from inside the container.
+
 `tests/sentry/conftest.py` loads `sentry.testutils.pytest`. Do not preinitialize Django or pass
 `--ds`: Sentry adjusts apps and databases before `django.setup()`. The tests construct events in
 memory and stub latest-event lookups instead of querying Snuba. Integration tests use Sentry's

@@ -24,4 +24,8 @@ TASKWORKER_SCHEDULES["gitea-identity-refresh"] = {
 # (<prefix>/extensions/gitea/webhook/<integration id>/<repository id>/). Defaults to
 # system.url-prefix; prefer Sentry's public URL.
 # GITEA_WEBHOOK_URL_PREFIX = "https://sentry.example.com"
+# Optional: blame-based suspect commits from bare git mirrors. Needs git in the image
+# (enhance-image.sh) and disk space on the sentry-data volume.
+# GITEA_BLAME_ENABLED = True
+# GITEA_BLAME_MIRROR_DIR = "/data/sentry-gitea/mirrors"
 # END sentry-gitea

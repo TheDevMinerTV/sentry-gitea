@@ -89,6 +89,10 @@ class GiteaIntegrationClient(RepositoryClient):
         if OAuthSettings.load().base_url != self.metadata["base_url"]:
             raise IntegrationError("The Gitea instance changed. Reinstall the integration.")
 
+    def access_token(self) -> str:
+        """For git over HTTPS, which cannot go through `_call`'s refresh-and-retry."""
+        return self._current_identity().data["access_token"]
+
     def extend_deadline(self, seconds: float) -> None:
         """Long background operations (release ranges, backfills) get their own budget."""
         self.deadline = time.monotonic() + seconds
