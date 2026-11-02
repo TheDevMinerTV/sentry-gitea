@@ -1,8 +1,9 @@
 """Bare git mirrors and `git blame`, for Gitea's missing blame API. No Sentry imports.
 
 Layout under the mirror root: `<integration id>/<gitea repository id>.git` (the mirror), a sibling
-`.lock` file serializing clone, fetch and delete across processes, and `.<name>.tmp-*` clones in
-progress, which become the mirror only through an atomic rename.
+`.lock` file serializing clone, fetch and delete across processes, a sibling `.queued` file
+claimed while a mirror task is queued or running, and `.<name>.tmp-*` clones in progress, which
+become the mirror only through an atomic rename.
 """
 
 from __future__ import annotations
@@ -29,6 +30,10 @@ FETCH_TIMEOUT = 30
 CLONE_TIMEOUT = 1500
 LOCK_TIMEOUT = 10
 FETCHED_STAMP = "sentry-gitea-fetched"
+MAINTAINED_STAMP = "sentry-gitea-maintained"
+MAINTENANCE_INTERVAL = 24 * 3600
+# Longer than a mirror task may run, so a claim outlives its task only when the task was lost.
+TASK_CLAIM_LIFETIME = CLONE_TIMEOUT + 300
 # Written by the first sync that pruned the mirror to the refs blame reads. Mirrors from earlier
 # versions, which hold every branch and tag, lack it.
 SYNCED_STAMP = "sentry-gitea-synced"
@@ -136,6 +141,7 @@ class GitMirror:
         self.fetch_interval = fetch_interval
         self.deadline = deadline
         self._lock_path = path.with_suffix(".lock")
+        self._claim_path = path.with_suffix(".queued")
 
     def exists(self) -> bool:
         return self.path.is_dir()
@@ -191,6 +197,8 @@ class GitMirror:
         """`git gc --auto`, which fetches never run: it could outlast their deadline."""
         with self._locked():
             if self.exists():
+                # Stamped first, so a failing gc is retried once per interval, not per blame.
+                (self.path / MAINTAINED_STAMP).touch()
                 result = self._git(self.path, "gc", "--auto", "--quiet", timeout=CLONE_TIMEOUT)
                 if result.returncode != 0:
                     raise GitError(f"git gc failed ({result.returncode}).")
@@ -216,6 +224,35 @@ class GitMirror:
                 return True
         except MirrorBusy:
             return False
+
+    def maintenance_due(self) -> bool:
+        try:
+            maintained = (self.path / MAINTAINED_STAMP).stat().st_mtime
+        except FileNotFoundError:
+            return self.exists()
+        return time.time() - maintained >= MAINTENANCE_INTERVAL
+
+    def claim_task(self) -> bool:
+        """Whether the caller may queue a mirror task: none is queued or running already.
+
+        The task releases the claim when it ends; a claim older than any task can run is free.
+        """
+        self._claim_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.close(os.open(self._claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            return True
+        except FileExistsError:
+            pass
+        try:
+            if time.time() - self._claim_path.stat().st_mtime < TASK_CLAIM_LIFETIME:
+                return False
+            os.utime(self._claim_path)
+        except FileNotFoundError:
+            return False
+        return True
+
+    def release_task(self) -> None:
+        self._claim_path.unlink(missing_ok=True)
 
     def needs_sync(self) -> bool:
         """Cloned by an earlier version, with every branch and tag, and never pruned since."""

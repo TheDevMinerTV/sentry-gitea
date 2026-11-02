@@ -81,21 +81,34 @@ def remote_for(installation: Any, repo_id: int, deadline: Deadline | None = None
 
 def sync_mirror(installation: Any, repo: Any, refs: Collection[str]) -> None:
     """Clone the mirror, or else fetch into it now, with a clone's time budget, keeping only the
-    default branch and `refs`; then run the git maintenance that fetches never run."""
+    default branch and `refs`; then run the git maintenance that fetches never run, and release
+    the task claim."""
     repo_id = stable_repo_id(repo)
     if repo_id is None:
         return
     mirror = repository_mirror(installation.model.id, repo_id, Deadline.after(CLONE_TIMEOUT))
     remote = functools.partial(remote_for, installation, repo_id)
-    if not mirror.clone(remote, refs):
-        mirror.sync(remote, refs, timeout=CLONE_TIMEOUT)
-    mirror.maintain()
+    try:
+        try:
+            if not mirror.clone(remote, refs):
+                mirror.sync(remote, refs, timeout=CLONE_TIMEOUT)
+        finally:
+            # Also when Gitea is unreachable: otherwise every new issue would queue maintenance.
+            mirror.maintain()
+    finally:
+        mirror.release_task()
 
 
-def _queue_sync(repo: Any) -> None:
+def _queue_sync(repo: Any, mirror: GitMirror) -> None:
     from .tasks import mirror_repository
 
-    mirror_repository.delay(repository_id=repo.id)
+    if not mirror.claim_task():
+        return
+    try:
+        mirror_repository.delay(repository_id=repo.id)
+    except BaseException:
+        mirror.release_task()
+        raise
 
 
 def blame_for_files(installation: Any, files: Sequence[SourceLineInfo]) -> list[FileBlameInfo]:
@@ -136,15 +149,16 @@ def _blame_repository(
     mirror = repository_mirror(installation.model.id, repo_id, deadline)
     if not mirror.exists():
         # Clones can outlast the commit-context task's deadline; they get a task of their own.
-        _queue_sync(repo)
+        _queue_sync(repo, mirror)
         if not mirror.exists():
             logger.info(
                 "sentry-gitea: blame skipped, mirror not ready",
                 extra={"integration_id": installation.model.id, "repository_id": repo.id},
             )
             return
-    if mirror.needs_sync():
-        _queue_sync(repo)  # Meanwhile blame fetches only what it asks for.
+    if mirror.needs_sync() or mirror.maintenance_due():
+        # Meanwhile blame fetches only what it asks for, and never runs gc.
+        _queue_sync(repo, mirror)
     by_ref: dict[str, list[SourceLineInfo]] = defaultdict(list)
     for file in files:
         by_ref[file.ref].append(file)
@@ -154,7 +168,7 @@ def _blame_repository(
             mirror.refresh(lambda: remote_for(installation, repo_id, deadline), unknown)
         except (GitError, ApiError, IntegrationError):
             # The task has a longer budget for a slow fetch, and may refresh an expired token.
-            _queue_sync(repo)
+            _queue_sync(repo, mirror)
             raise
     for ref, ref_files in by_ref.items():
         sha = mirror.resolve(ref)

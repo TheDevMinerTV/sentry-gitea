@@ -37,7 +37,13 @@ from sentry_gitea.integration.blame import BLAME_BUDGET
 from sentry_gitea.integration.provider import GiteaIntegrationProvider
 from sentry_gitea.integration.repository import GiteaRepositoryProvider
 from sentry_gitea.integration.tasks import mirror_repository
-from sentry_gitea.mirror import FETCHED_STAMP, LOCK_TIMEOUT, SYNCED_STAMP, mirror_path
+from sentry_gitea.mirror import (
+    FETCHED_STAMP,
+    LOCK_TIMEOUT,
+    MAINTAINED_STAMP,
+    SYNCED_STAMP,
+    mirror_path,
+)
 
 TOKEN = "synthetic-integration-access"
 
@@ -510,6 +516,66 @@ class TestBlame(SyncFixture):
             assert self.installation.get_blame_for_files([self.line(2)], extra={}) == []
         assert time.monotonic() - started < budget
         assert queued.called, "the task, with time to wait, refreshes instead"
+
+    @responses.activate
+    @blame_settings
+    def test_a_healthy_mirror_gets_its_gc_from_a_task_once_a_day(self):
+        self.mock_lookup()
+        with self.tasks():
+            self.installation.get_blame_for_files([self.line(2)], extra={})
+        path = mirror_path(self.mirrors, self.integration.id, 41)
+        # Keep every fetch as a pack and ask for gc at the second pack, so a gc is observable.
+        git(path, "config", "fetch.unpackLimit", "1")
+        git(path, "config", "gc.autoPackLimit", "1")
+        packs = path / "objects" / "pack"
+        for change in ("bb", "bbb"):
+            pushed = self.source.commit(
+                f"Make b {change}",
+                {"app.py": f"a\n{change}\nc\n"},
+                author=ALICE,
+                when=timezone.now(),
+            )
+            os.utime(path / FETCHED_STAMP, (0, 0))
+            with patch("sentry_gitea.integration.tasks.mirror_repository.delay") as queued:
+                blamed = self.installation.get_blame_for_files([self.line(2)], extra={})
+            assert [b.commit.commitId for b in blamed] == [pushed]
+            assert not queued.called, "maintained less than a day ago"
+        assert len(list(packs.glob("*.pack"))) == 2
+        os.utime(path / MAINTAINED_STAMP, (0, 0))
+        with self.tasks():
+            blamed = self.installation.get_blame_for_files([self.line(2)], extra={})
+        assert [b.commit.commitId for b in blamed] == [pushed]
+        assert len(list(packs.glob("*.pack"))) == 1
+
+    @responses.activate
+    @blame_settings
+    def test_the_mirror_task_collects_garbage_even_when_gitea_is_unreachable(self):
+        self.mock_lookup()
+        with self.tasks():
+            self.installation.get_blame_for_files([self.line(2)], extra={})
+        stamp = mirror_path(self.mirrors, self.integration.id, 41) / MAINTAINED_STAMP
+        os.utime(stamp, (0, 0))
+        responses.replace(responses.GET, self.server.url + "/api/v1/repositories/41", status=500)
+        with self.assertLogs("sentry_gitea.integration.tasks", level="WARNING"):
+            mirror_repository(repository_id=self.repo.id)
+        assert time.time() - stamp.stat().st_mtime < 60, "gc ran despite the failed sync"
+
+    @responses.activate
+    @blame_settings
+    def test_blame_queues_one_mirror_task_while_one_is_pending(self):
+        self.mock_lookup()
+        with patch("sentry_gitea.integration.tasks.mirror_repository.delay") as queued:
+            for _ in range(3):
+                assert self.installation.get_blame_for_files([self.line(2)], extra={}) == []
+        assert queued.call_count == 1
+        mirror_repository(repository_id=self.repo.id)
+        path = mirror_path(self.mirrors, self.integration.id, 41)
+        (path / SYNCED_STAMP).unlink()
+        with patch("sentry_gitea.integration.tasks.mirror_repository.delay") as queued:
+            for _ in range(3):
+                blamed = self.installation.get_blame_for_files([self.line(2)], extra={})
+                assert [b.commit.commitId for b in blamed] == [self.source.commits["Fix b"]]
+        assert queued.call_count == 1, "the finished task released its claim"
 
     @responses.activate
     @blame_settings

@@ -461,8 +461,13 @@ repository:
    repository. The task keeps exactly Gitea's default branch (the remote `HEAD`) and the branch of
    every code mapping (`master` when empty, as Sentry defaults it) of every live Sentry repository
    sharing the mirror, deleting other refs. Fetches run with `gc.auto=0` and
-   `maintenance.auto=false`, so git never collects garbage inside a fetch's time limit; the task
-   runs `git gc --auto` after each clone or sync, within its own 25-minute limit. Adding a repository in Sentry queues the same task. Only selected repositories have
+   `maintenance.auto=false`, so git never collects garbage inside a fetch's time limit. The task
+   runs `git gc --auto` after each clone or sync, within its own 25-minute limit, even when the
+   sync failed. A blame on a mirror whose last gc is more than 24 hours old (the mtime of
+   `sentry-gitea-maintained` in the mirror) queues the task, which then syncs and collects
+   garbage; the blame itself goes on without waiting for it. The task also syncs to the mapped
+   refs, so it drops `refs/commits/<sha>` refs that earlier blames fetched. Adding a repository in
+   Sentry queues the same task. Only selected repositories have
    Sentry repositories, so nothing else is cloned.
 2. **Revision.** A full commit SHA the mirror already has is used directly. Anything else (a branch
    or tag name, or an unknown commit) fetches first, at most once every 5 minutes per mirror, then
@@ -506,8 +511,12 @@ OAuth token about to expire is refreshed within the same budget: the wait for th
 (otherwise up to 45 seconds) and the token request both end in time, or the refresh is skipped.
 When the budget runs out, blame returns what it found so far. A fetch that fails or runs out of
 time during blame, including one whose token could not be refreshed in time, queues the mirror
-task, which fetches again with the clone's time limit and refreshes the token if needed. A file lock next to each mirror (`<id>.lock`, kept after
-deletion) serializes clone, fetch and delete across processes. A clone goes to a temporary
+task, which fetches again with the clone's time limit and refreshes the token if needed. Blame
+queues at most one mirror task per mirror at a time: queueing creates `<id>.queued` next to the
+mirror, and blame does not queue while that file exists. The task removes it when it ends, so the
+next missing mirror, failed fetch or due gc queues a new task. A file left by a task that never
+ran stops blocking after 30 minutes, longer than a task may run. A file lock next to each mirror
+(`<id>.lock`, kept after deletion) serializes clone, fetch and delete across processes. A clone goes to a temporary
 directory and becomes the mirror through an atomic rename, so an interrupted clone never looks like
 a mirror; the next clone removes its leftovers.
 

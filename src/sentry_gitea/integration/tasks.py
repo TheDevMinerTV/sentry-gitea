@@ -7,7 +7,8 @@ Registered through `TASKWORKER_IMPORTS += ("sentry_gitea.integration.tasks",)` i
   upserted page by page, so a retry or a replayed delivery only repeats idempotent writes.
 - `mirror_repository` clones the bare git mirror that blame-based suspect commits read
   (GITEA_BLAME_ENABLED), or syncs an existing one to the refs code mappings use when a fetch
-  during blame failed, then runs `git gc --auto`, which fetches never run.
+  during blame failed or the last gc is a day old, then runs `git gc --auto`, which fetches
+  never run.
 - `refresh_identities` keeps idle installations authorized: Gitea refresh tokens expire
   (`REFRESH_TOKEN_EXPIRATION_TIME`, 730 h by default) unless used. Operators schedule it with
   `TASKWORKER_SCHEDULES["gitea-identity-refresh"] = {"task":

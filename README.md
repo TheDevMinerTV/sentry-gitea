@@ -287,7 +287,8 @@ How it behaves:
   the repository's default branch, the branch or tag of each code mapping, and commits that blame
   asked for by SHA. Plan for the history of those refs; unselected repositories are never cloned.
   Git's automatic garbage collection never runs inside a fetch; the mirror task runs `git gc --auto`
-  after each clone or sync. A mirror cloned by an earlier version, with all branches and tags,
+  after each clone or sync, and a blame queues that task when the mirror's last gc is more than a
+  day old. A mirror cloned by an earlier version, with all branches and tags,
   is pruned by the mirror task that its first blame queues. Deleting the
   repository in Sentry, or removing it from the selection, deletes its mirror, unless another
   organization still uses the same repository through the same installation.
