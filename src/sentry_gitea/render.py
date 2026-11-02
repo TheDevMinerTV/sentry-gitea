@@ -154,8 +154,16 @@ def parse_metadata(body: str, *, dedup_id: str | None = None) -> dict[str, Any] 
     return None
 
 
+def strip_metadata(body: str) -> str:
+    # Repeat until stable: removing one marker can join the text around it into another.
+    while (stripped := _META.sub("", body)) != body:
+        body = stripped
+    return body
+
+
 def ensure_metadata(body: str, event: EventData) -> str:
-    return _META.sub("", body).rstrip() + "\n\n" + render_metadata(event)
+    text = strip_metadata(body).rstrip()
+    return f"{text}\n\n{render_metadata(event)}" if text else render_metadata(event)
 
 
 def _release(event: EventData) -> str:
@@ -196,7 +204,7 @@ def render_body(event: EventData) -> str:
         "**Reproduction:** Inspect the event and its context in "
         f"[Sentry](<{_url(event.issue_url)}>)."
     )
-    return "\n\n".join([*lines, render_metadata(event)])
+    return "\n\n".join(lines)
 
 
 def render_comment(event: EventData) -> str:

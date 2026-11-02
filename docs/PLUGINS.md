@@ -232,8 +232,9 @@ matching event is delivered normally. Link fields are saved in a database transa
 
 New issue bodies contain a hidden `sentry-gitea-meta v1` JSON block with a stable
 dedup ID derived from the Sentry URL prefix and numeric project/group IDs. Preserve
-that block when editing in Gitea. Edited Sentry form descriptions retain their prose
-and receive the authoritative block.
+that block when editing in Gitea. The Sentry create form does not show the block:
+the plugin appends the authoritative one when it files the issue, and removes any
+block typed into the description.
 
 If remote creation succeeds but its response or local save fails, the next attempt
 searches open and closed issues for the exact metadata ID before creating again,

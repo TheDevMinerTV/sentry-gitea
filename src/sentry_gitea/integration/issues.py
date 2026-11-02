@@ -16,6 +16,7 @@ from sentry import options
 from sentry.integrations.models.external_issue import ExternalIssue
 from sentry.integrations.source_code_management.issues import SourceCodeIssueIntegration
 from sentry.locks import locks
+from sentry.models.group import Group
 from sentry.shared_integrations.exceptions import ApiError, IntegrationError, IntegrationFormError
 from sentry.utils.http import absolute_uri
 from sentry.utils.locking import UnableToAcquireLock
@@ -23,11 +24,12 @@ from sentry.utils.locking import UnableToAcquireLock
 from sentry_gitea.api.client import browser_issue_url, is_pull_request, issue_number
 from sentry_gitea.render import (
     EventData,
+    ensure_metadata,
     event_is_handled,
     parse_label_names,
-    parse_metadata,
     render_body,
     render_title,
+    strip_metadata,
 )
 
 from .identity import OAuthSettings, log_failure
@@ -36,6 +38,8 @@ from .utils import issue_key, parse_issue_key
 logger = logging.getLogger(__name__)
 LINK_MARKER = re.compile(r"<!-- sentry-gitea-link ([1-9][0-9]*) -->")
 LINK_SALT = "sentry-gitea.link-context.v1"
+CREATE_SALT = "sentry-gitea.create-context.v1"
+CONTEXT_MAX_AGE = 86400
 # A saved default repository answering with these statuses moved, vanished or became private.
 STALE_STATUSES = frozenset({301, 302, 307, 308, 403, 404})
 
@@ -149,10 +153,45 @@ class GiteaIssues(SourceCodeIssueIntegration):
     def get_group_description(self, group: Any, event: Any, **kwargs: Any) -> str:
         return render_body(self._event_data(group, event)) if group is not None else ""
 
+    def _signed_group_context(self, group: Any, salt: str) -> str:
+        return signing.dumps(
+            {
+                "group_id": group.id,
+                "organization_id": self.organization_id,
+                "integration_id": self.model.id,
+            },
+            salt=salt,
+        )
+
+    def _signed_group_id(self, token: Any, salt: str) -> str:
+        if not isinstance(token, str):
+            raise ValueError("Group context must be text.")
+        context = signing.loads(token, salt=salt, max_age=CONTEXT_MAX_AGE)
+        if (
+            context["organization_id"] != self.organization_id
+            or context["integration_id"] != self.model.id
+        ):
+            raise ValueError("Wrong group context.")
+        return issue_number(context["group_id"])
+
+    def _create_context_group(self, data: Mapping[str, Any]) -> Any:
+        token = data.get("createContext")
+        if not token:
+            return None
+        try:
+            return Group.objects.get(
+                id=self._signed_group_id(token, CREATE_SALT),
+                project__organization_id=self.organization_id,
+            )
+        except (signing.BadSignature, Group.DoesNotExist, ValueError, KeyError, TypeError):
+            raise IntegrationFormError(
+                {"description": ["Reload the form before creating the issue."]}
+            ) from None
+
     def get_create_issue_config(self, group: Any, user: Any, **kwargs: Any) -> list[dict[str, Any]]:
         repo = self._repository_field(group, kwargs.get("params") or {})
         event = group.get_latest_event() if group is not None else None
-        return [
+        fields = [
             repo,
             {
                 "name": "title",
@@ -185,6 +224,12 @@ class GiteaIssues(SourceCodeIssueIntegration):
                 "help": "Gitea username.",
             },
         ]
+        if group is not None:
+            # Core does not pass group to create_issue, and the dedup marker stays out of the
+            # editable description, so the form carries the group the marker is built for.
+            context = self._signed_group_context(group, CREATE_SALT)
+            fields.append({"name": "createContext", "type": "hidden", "default": context})
+        return fields
 
     def get_link_issue_config(self, group: Any, **kwargs: Any) -> list[dict[str, Any]]:
         repo = self._repository_field(group, kwargs.get("params") or {})
@@ -215,14 +260,7 @@ class GiteaIssues(SourceCodeIssueIntegration):
         ]
         if group is not None:
             # Core does not pass group to after_link_issue. Keep context when the comment is edited.
-            context = signing.dumps(
-                {
-                    "group_id": group.id,
-                    "organization_id": self.organization_id,
-                    "integration_id": self.model.id,
-                },
-                salt=LINK_SALT,
-            )
+            context = self._signed_group_context(group, LINK_SALT)
             fields.append({"name": "linkContext", "type": "hidden", "default": context})
         return fields
 
@@ -276,13 +314,17 @@ class GiteaIssues(SourceCodeIssueIntegration):
                 raise IntegrationFormError(
                     {"labels": ["Enter comma-separated label names."]}
                 ) from None
+            group = self._create_context_group(data)
             client = self.get_client()
             repo = client.get_repo(repo=data.get("repo"))
-            metadata = parse_metadata(description)
-            if metadata is None:
-                # No marker to recover by (the user removed it): a plain, non-idempotent create.
-                return self._create_issue(client, repo, title, description, labels, assignee)
-            dedup_id = metadata["dedup_id"]
+            if group is None:
+                # No form context (a direct API call): a plain, non-idempotent create. Markers
+                # typed into the description are dropped so they cannot alias another group.
+                body = strip_metadata(description).rstrip()
+                return self._create_issue(client, repo, title, body, labels, assignee)
+            event = self._event_data(group, group.get_latest_event())
+            body = ensure_metadata(description, event)
+            dedup_id = event.dedup_id
             digest = hashlib.sha256(dedup_id.encode()).hexdigest()[:32]
             lock = locks.get(
                 f"sentry-gitea:create:{self.model.id}:{repo['id']}:{digest}",
@@ -295,7 +337,7 @@ class GiteaIssues(SourceCodeIssueIntegration):
                 existing = client.find_marked_issue(dedup_id, repo=repo["full_name"])
                 if existing is not None:
                     return self._normalized_issue(repo, existing)
-                return self._create_issue(client, repo, title, description, labels, assignee)
+                return self._create_issue(client, repo, title, body, labels, assignee)
 
     def _create_issue(
         self,
@@ -370,13 +412,7 @@ class GiteaIssues(SourceCodeIssueIntegration):
             return "", ""
         if data.get("linkContext"):
             try:
-                context = signing.loads(data["linkContext"], salt=LINK_SALT, max_age=86400)
-                if (
-                    context["organization_id"] != self.organization_id
-                    or context["integration_id"] != self.model.id
-                ):
-                    raise ValueError("Wrong link context.")
-                group_id = issue_number(context["group_id"])
+                group_id = self._signed_group_id(data["linkContext"], LINK_SALT)
             except (signing.BadSignature, ValueError, KeyError, TypeError):
                 raise IntegrationFormError(
                     {"comment": ["Reload the link form before adding a comment."]}

@@ -169,12 +169,16 @@ From a Sentry issue's integration actions, select the installed Gitea owner:
 
 Values taken from the event (title, culprit, release, environment and message) are rendered as
 inline code in the generated description, so they cannot @mention Gitea users or create automatic
-links. The description ends with a hidden `sentry-gitea-meta v1` block that identifies the Sentry
-issue. Before creating, the integration searches the selected repository for an issue with that
-block; if it finds one, it links that issue instead of filing a duplicate. A create that failed
-after Gitea had already filed the issue can therefore simply be retried. This also applies after
-an unlink: to file a separate issue for the same Sentry issue, remove the hidden block from the
-description. Recovery depends on Gitea's issue search index and can miss an issue that is not
+links. The form does not show the hidden `sentry-gitea-meta v1` block that identifies the Sentry
+issue: it carries signed context for the Sentry issue in a hidden field (valid for 24 hours), and
+the integration appends the block when it files the issue. Any block typed into the description
+is removed first, so an edited description can neither drop nor forge it. Before creating, the
+integration searches the selected repository for an issue with that block; if it finds one, it
+links that issue instead of filing a duplicate. A create that failed after Gitea had already filed
+the issue, or a form submitted twice, therefore files one issue. This also applies after an
+unlink: to file a separate issue for the same Sentry issue, remove the hidden block from the
+existing Gitea issue's body first. A create without the signed context (a direct API call) is not
+deduplicated. Recovery depends on Gitea's issue search index and can miss an issue that is not
 indexed yet.
 
 Markers are trusted only when the installation's own Gitea user wrote them: recovery considers

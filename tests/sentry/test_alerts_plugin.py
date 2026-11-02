@@ -31,7 +31,7 @@ from sentry_gitea.api.errors import GiteaApiError
 from sentry_gitea.meta import AUTHOR, ISSUES_URL, PROJECT_URL
 from sentry_gitea.plugins.alerts import LOCK_WAIT
 from sentry_gitea.plugins.issue import BLOCKED_ADDRESS, GiteaIssuePlugin, group_lock
-from sentry_gitea.render import parse_metadata, render_body
+from sentry_gitea.render import ensure_metadata, parse_metadata, render_body
 
 BASE = "https://forge.example/git"
 PUBLIC = "https://public-forge.example/browser"
@@ -145,7 +145,7 @@ class TestGiteaAlertsPlugin(TestCase):
         assert mechanism.get("handled") is False
         data = self.issue_plugin.event_data(self.group, self.event)
         assert data.handled is False
-        metadata = parse_metadata(render_body(data))
+        metadata = parse_metadata(ensure_metadata(render_body(data), data))
         assert metadata["severity"] == "high"
         assert metadata["class"] == "crash"
 
@@ -291,7 +291,8 @@ class TestGiteaAlertsPlugin(TestCase):
     def test_recovers_closed_issue_without_reopening_or_commenting(self):
         self.issue_plugin.set_option("public_url", PUBLIC, self.project)
         self.mock_repo()
-        body = render_body(self.issue_plugin.event_data(self.group, self.event))
+        data = self.issue_plugin.event_data(self.group, self.event)
+        body = ensure_metadata(render_body(data), data)
         responses.get(
             API + "/issues",
             json=[self.remote_issue(body=body, state="closed")],
@@ -398,9 +399,10 @@ class TestGiteaAlertsPlugin(TestCase):
     def test_planted_marker_by_another_user_is_not_recovered(self):
         """R2-03: a marker in an issue someone else opened must not capture the link."""
         self.mock_create()
+        data = self.issue_plugin.event_data(self.group, self.event)
         planted = self.remote_issue(
             number=3,
-            body=render_body(self.issue_plugin.event_data(self.group, self.event)),
+            body=ensure_metadata(render_body(data), data),
             user={"id": 66, "login": "mallory"},
         )
         responses.replace(
