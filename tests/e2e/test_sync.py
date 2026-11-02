@@ -131,17 +131,20 @@ def test_sync_settings_respect_snippet_and_validate_override(monkeypatch) -> Non
     commented = (
         "# GITEA_WEBHOOK_URL_PREFIX = 'x'\n"
         "# TASKWORKER_IMPORTS += ('sentry_gitea.integration.tasks',)\n"
-        "# GITEA_PLUGIN_ALLOWED_BASE_URLS = ('http://x',)"
+        "# GITEA_PLUGIN_ALLOWED_BASE_URLS = ('http://x',)\n"
+        "# GITEA_BLAME_ENABLED = True"
     )
     assert sync_settings(commented) == (
         "GITEA_WEBHOOK_URL_PREFIX = 'http://web:9000'\n"
         "TASKWORKER_IMPORTS += ('sentry_gitea.integration.tasks',)\n"
-        "GITEA_PLUGIN_ALLOWED_BASE_URLS = ('http://gitea:3000',)"
+        "GITEA_PLUGIN_ALLOWED_BASE_URLS = ('http://gitea:3000',)\n"
+        "GITEA_BLAME_ENABLED = True"
     )
     enabled = (
         "GITEA_WEBHOOK_URL_PREFIX = os.environ['X']\n"
         'TASKWORKER_IMPORTS = (*TASKWORKER_IMPORTS, "sentry_gitea.integration.tasks")\n'
-        "GITEA_PLUGIN_ALLOWED_BASE_URLS = ('http://gitea:3000', 'https://git.example')"
+        "GITEA_PLUGIN_ALLOWED_BASE_URLS = ('http://gitea:3000', 'https://git.example')\n"
+        "GITEA_BLAME_ENABLED = False"
     )
     assert sync_settings(enabled) == ""
     monkeypatch.setenv("GITEA_WEBHOOK_URL_PREFIX", "http://sentry-web:9000/")
