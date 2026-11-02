@@ -313,8 +313,10 @@ class _Transport:
 class GiteaOAuthClient(_Transport):
     """Confidential OAuth grants, sharing the bounded transport but never API auth headers."""
 
-    def __init__(self, base_url: str, client_id: str, client_secret: str):
-        super().__init__(base_url)
+    def __init__(
+        self, base_url: str, client_id: str, client_secret: str, *, deadline: float | None = None
+    ):
+        super().__init__(base_url, deadline=deadline)
         self._prefix = ""
         self._sensitive_response = True
         self._credentials = {"client_id": client_id, "client_secret": client_secret}

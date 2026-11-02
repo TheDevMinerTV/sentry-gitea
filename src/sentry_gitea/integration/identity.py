@@ -23,12 +23,19 @@ from sentry.shared_integrations.exceptions import ApiUnauthorized, IntegrationEr
 from sentry.utils.http import absolute_uri
 from sentry.utils.locking import UnableToAcquireLock
 
-from sentry_gitea.api.client import GiteaClient, GiteaOAuthClient, issue_number, normalize_base_url
+from sentry_gitea.api.client import (
+    REQUEST_ALLOWANCE,
+    GiteaClient,
+    GiteaOAuthClient,
+    issue_number,
+    normalize_base_url,
+)
 from sentry_gitea.api.errors import GiteaApiError
 
 from .utils import OAUTH_SCOPES, normalize_tokens, stamp_issued, validate_scopes
 
 logger = logging.getLogger(__name__)
+REFRESH_LOCK_WAIT = 45
 
 
 class ConfigurationError(IntegrationError):
@@ -59,8 +66,10 @@ class OAuthSettings:
             raise ConfigurationError("GITEA_CLIENT_ID and GITEA_CLIENT_SECRET must be strings.")
         return cls(base, public, settings.GITEA_CLIENT_ID, settings.GITEA_CLIENT_SECRET)
 
-    def oauth_client(self) -> GiteaOAuthClient:
-        return GiteaOAuthClient(self.base_url, self.client_id, self.client_secret)
+    def oauth_client(self, deadline: float | None = None) -> GiteaOAuthClient:
+        return GiteaOAuthClient(
+            self.base_url, self.client_id, self.client_secret, deadline=deadline
+        )
 
 
 def setup_path() -> str:
@@ -232,12 +241,19 @@ class GiteaIdentityProvider(OAuth2Provider):
 
     def refresh_identity(self, identity: Any, **kwargs: Any) -> None:
         failed_token = kwargs.get("failed_access_token", identity.data.get("access_token"))
+        # A monotonic time by which the refresh, lock wait and OAuth request included, must end.
+        deadline: float | None = kwargs.get("deadline")
+        lock_wait = REFRESH_LOCK_WAIT
+        if deadline is not None:
+            lock_wait = min(lock_wait, deadline - time.monotonic() - REQUEST_ALLOWANCE)
         try:
+            if lock_wait <= 0:
+                raise ValueError("No time left to refresh the token.")
             config = OAuthSettings.load()
             lock = locks.get(
                 f"sentry-gitea:identity:{identity.id}", duration=90, name="gitea_token_refresh"
             )
-            with lock.blocking_acquire(initial_delay=0.1, timeout=45):
+            with lock.blocking_acquire(initial_delay=0.1, timeout=lock_wait):
                 current = identity_service.get_identity(filter={"id": identity.id})
                 if current is None or not current.data.get("refresh_token"):
                     raise ValueError("Missing identity.")
@@ -245,7 +261,7 @@ class GiteaIdentityProvider(OAuth2Provider):
                     raise ValueError("Gitea instance changed; reinstall the integration.")
                 if current.data.get("access_token") != failed_token:
                     return
-                with config.oauth_client() as client:
+                with config.oauth_client(deadline) as client:
                     data = stamp_issued(
                         normalize_tokens(
                             client.refresh_token(current.data["refresh_token"]),

@@ -21,6 +21,7 @@ from sentry.integrations.source_code_management.commit_context import (
     SourceLineInfo,
 )
 from sentry.integrations.utils.commit_context import find_commit_context_for_event_all_frames
+from sentry.locks import locks
 from sentry.models.commit import Commit
 from sentry.models.groupowner import GroupOwner, GroupOwnerType
 from sentry.tasks import post_process
@@ -437,10 +438,8 @@ class TestBlame(SyncFixture):
         elapsed = self.worst_case_blame_seconds([str(digit) * 40 for digit in range(1, 5)])
         assert BLAME_BUDGET - 1 <= elapsed <= BLAME_BUDGET
 
-    @responses.activate
-    @blame_settings
-    def test_the_mirror_task_refreshes_an_expired_token(self):
-        # Blame never refreshes tokens; the task it queues after a 401 must be able to.
+    def expire_token(self):
+        """The stored access token has expired; Gitea accepts only the one a refresh returns."""
         self.identity.update(
             external_id=f"{self.server.url}|2",
             data={
@@ -455,16 +454,62 @@ class TestBlame(SyncFixture):
                 return 401, {}, json.dumps({"message": "token expired"})
             return 200, {}, json.dumps(WEBHOOK_REPO)
 
-        responses.add_callback(
-            responses.GET, self.server.url + "/api/v1/repositories/41", callback=lookup
-        )
+        url = self.server.url + "/api/v1/repositories/41"
+        if any(r.url == url for r in responses.registered()):
+            responses.remove(responses.GET, url)
+        responses.add_callback(responses.GET, url, callback=lookup)
         responses.post(
             self.server.url + "/login/oauth/access_token",
             json={"access_token": TOKEN, "refresh_token": "rotated", "expires_in": 3600},
         )
+
+    @responses.activate
+    @blame_settings
+    def test_the_mirror_task_refreshes_an_expired_token(self):
+        self.expire_token()
         mirror_repository(repository_id=self.repo.id)
         assert mirror_path(self.mirrors, self.integration.id, 41).is_dir()
         assert set(self.server.authorizations) == {f"Bearer {TOKEN}"}
+
+    @responses.activate
+    @blame_settings
+    def test_blame_refreshes_an_expired_token_and_fetches(self):
+        # Gitea access tokens last an hour: an idle installation must not lose every first blame.
+        self.mock_lookup()
+        with self.tasks():
+            self.installation.get_blame_for_files([self.line(2)], extra={})
+        pushed = self.source.commit(
+            "Rework b", {"app.py": "a\nbb\nc\n"}, author=ALICE, when=timezone.now()
+        )
+        os.utime(mirror_path(self.mirrors, self.integration.id, 41) / FETCHED_STAMP, (0, 0))
+        self.expire_token()
+        with patch("sentry_gitea.integration.tasks.mirror_repository.delay") as queued:
+            blamed = self.installation.get_blame_for_files([self.line(2)], extra={})
+        assert [b.commit.commitId for b in blamed] == [pushed]
+        assert not queued.called
+
+    @responses.activate
+    @blame_settings
+    def test_a_held_refresh_lock_cannot_hold_blame_past_its_budget(self):
+        self.mock_lookup()
+        with self.tasks():
+            self.installation.get_blame_for_files([self.line(2)], extra={})
+        os.utime(mirror_path(self.mirrors, self.integration.id, 41) / FETCHED_STAMP, (0, 0))
+        self.expire_token()
+        held = locks.get(
+            f"sentry-gitea:identity:{self.identity.id}", duration=90, name="gitea_token_refresh"
+        )
+        held.acquire()
+        self.addCleanup(held.release)
+        budget = 15 + sum(TIMEOUT) + 3  # read slack and one request, leaving 3 s to wait
+        started = time.monotonic()
+        with (
+            patch("sentry_gitea.integration.blame.BLAME_BUDGET", budget),
+            patch("sentry_gitea.integration.tasks.mirror_repository.delay") as queued,
+        ):
+            assert self.installation.get_blame_for_files([self.line(2)], extra={}) == []
+        assert time.monotonic() - started < budget
+        assert queued.called, "the task, with time to wait, refreshes instead"
 
     @responses.activate
     @blame_settings

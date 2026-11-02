@@ -477,11 +477,12 @@ git and its helper processes: 10 seconds for a local command, 30 seconds for a f
 45 seconds, half of Sentry's 90-second commit-context deadline, which other providers' blame in the
 same task shares. Every step checks the time left first and gets the smaller of its own limit and
 that time: each git command, the wait for the mirror lock (at most 10 seconds) and the Gitea API
-lookup of the repository, which must also be able to finish its last 15-second read in time.
-Blame never refreshes the OAuth token, whose lock alone can wait 45 seconds. When the budget runs
-out, blame returns what it found so far. A fetch that fails or runs out of time during blame, or an
-expired token, queues the mirror task, which fetches again with the clone's time limit and
-refreshes the token if needed. A file lock next to each mirror (`<id>.lock`, kept after
+lookup of the repository, which must also be able to finish its last 15-second read in time. An
+OAuth token about to expire is refreshed within the same budget: the wait for the refresh lock
+(otherwise up to 45 seconds) and the token request both end in time, or the refresh is skipped.
+When the budget runs out, blame returns what it found so far. A fetch that fails or runs out of
+time during blame, including one whose token could not be refreshed in time, queues the mirror
+task, which fetches again with the clone's time limit and refreshes the token if needed. A file lock next to each mirror (`<id>.lock`, kept after
 deletion) serializes clone, fetch and delete across processes. A clone goes to a temporary
 directory and becomes the mirror through an atomic rename, so an interrupted clone never looks like
 a mirror; the next clone removes its leftovers.

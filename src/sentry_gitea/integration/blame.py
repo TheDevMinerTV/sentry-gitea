@@ -71,7 +71,7 @@ def mark_mirror_stale(repo: Any) -> None:
 
 
 def remote_for(installation: Any, repo_id: int, deadline: Deadline | None = None) -> Remote:
-    """The clone URL and token; with a deadline, without refreshing an expiring token."""
+    """The clone URL and token, refreshed if it is about to expire, all within `deadline`."""
     client = installation.get_client()
     if deadline is not None:
         client.bound_by(deadline.at)
