@@ -30,7 +30,13 @@ class GiteaIntegration(GiteaIssueSync, GiteaIssues, GiteaSource):
         return GiteaIntegrationClient(self, identity)
 
     def get_repositories(
-        self, query: str | None = None, page_number_limit: int | None = None
+        self,
+        query: str | None = None,
+        page_number_limit: int | None = None,
+        accessible_only: bool = False,
+        use_cache: bool = False,
+        raise_on_page_limit: bool = False,
+        parallel: bool = False,
     ) -> list[dict[str, Any]]:
         with self._issue_operation():
             rows = self.get_client().search_repositories(query, page_number_limit, issues=False)
@@ -38,6 +44,7 @@ class GiteaIntegration(GiteaIssueSync, GiteaIssues, GiteaSource):
                 {
                     "identifier": row["full_name"],
                     "name": row["full_name"],
+                    "external_id": str(row["id"]),
                     "default_branch": row.get("default_branch") or "main",
                 }
                 for row in rows

@@ -10,9 +10,9 @@ from urllib.parse import parse_qs
 import responses
 from sentry.constants import ObjectStatus
 from sentry.taskworker.runtime import app
-from sentry.taskworker.scheduler.runner import ScheduleRunner
 from sentry.testutils.silo import no_silo_test
 from sentry.users.models.identity import Identity
+from taskbroker_client.scheduler import ScheduleRunner
 from test_integration_provider import BASE, METADATA, TOKENS, IntegrationFixture
 
 from sentry_gitea.integration.tasks import KEEPALIVE_AGE, refresh_identities

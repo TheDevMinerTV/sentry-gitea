@@ -7,6 +7,7 @@ test tree, not in the image, but its test case classes depend on them: without
 test transaction guard rejects.
 """
 
+import importlib.util
 import os
 from collections.abc import Iterator
 
@@ -14,6 +15,10 @@ import pytest
 import responses
 
 pytest_plugins = ["sentry.testutils.pytest"]
+
+# Sentry 26.10 removed the legacy plugin API (`sentry.plugins.bases`), so the plugins cannot load.
+LEGACY_PLUGIN_TESTS = ["test_alerts_plugin.py", "test_issue_plugin.py", "test_plugin_smoke.py"]
+collect_ignore = [] if importlib.util.find_spec("sentry.plugins.bases") else LEGACY_PLUGIN_TESTS
 
 
 @pytest.hookimpl(tryfirst=True)

@@ -283,7 +283,7 @@ class TestGiteaInstallPipeline(IntegrationTestCase):
         )
         responses.get(API + "/user", json=USER)
         responses.get(API + "/user/orgs", json=[])
-        start = self.client.get(self.init_path)
+        start = self.client.get(self.setup_path)
         assert start.status_code == 302
         query = parse_qs(urlsplit(start["Location"]).query)
         assert query["state"] and query["code_challenge_method"] == ["S256"]
