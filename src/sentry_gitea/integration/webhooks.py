@@ -45,6 +45,7 @@ from sentry_gitea.api.webhooks import (
     verify_signature,
 )
 
+from .blame import mark_mirror_stale
 from .commits import store_commits, upsert_pull_request
 from .identity import log_failure
 from .repository import PROVIDER, SYNC_FAILED
@@ -83,6 +84,7 @@ class PushWebhook(GiteaWebhook):
         if event.deleted:
             return  # Branch deletion: nothing to import.
         repo = kwargs["repo"]
+        mark_mirror_stale(repo)
         store_commits(repo, event.commits)
         # Branch creation imports only the delivered commits; no history walk.
         if event.truncated and not event.created:

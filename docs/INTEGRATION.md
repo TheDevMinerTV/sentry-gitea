@@ -391,7 +391,9 @@ repository:
    repository. Adding a repository in Sentry queues the same task.
 2. **Revision.** A full commit SHA the mirror already has is used directly. Anything else (a branch
    or tag name, or an unknown commit) fetches all branches and tags first, at most once every
-   5 minutes per mirror, then resolves the name. An unknown revision skips its frames.
+   5 minutes per mirror, then resolves the name. A push webhook for the repository lifts that limit
+   for the next fetch, so an issue right after a push is not blamed on the branch's old head. An
+   unknown revision skips its frames.
 3. **Blame.** `git blame --line-porcelain` runs once per file, with one `-L n,n` per frame line.
    Author name and email, committer time and the commit summary become Sentry's `CommitInfo`.
    Missing files and lines past the end of a file are skipped.

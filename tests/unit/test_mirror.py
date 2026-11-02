@@ -230,3 +230,15 @@ def test_missing_git_binary_is_a_git_error(mirror, monkeypatch):
     monkeypatch.setenv("PATH", str(mirror.path))
     with pytest.raises(GitError, match="not installed"):
         mirror.clone(lambda: Remote("http://127.0.0.1:9/x.git", TOKEN))
+
+
+@needs_git
+def test_a_stale_mirror_fetches_within_the_fetch_interval(published, remote, tmp_path):
+    repo, _server = published
+    mirror = GitMirror(mirror_path(tmp_path / "mirrors", 7, 41), fetch_interval=3600)
+    mirror.clone(remote)
+    third = repo.commit("Add d", {"app.py": "a\nB\nc\nd\n"}, author=ALICE, when=SECOND)
+    mirror.mark_stale()
+    assert mirror.refresh(remote) is True
+    assert mirror.resolve("main") == third
+    assert mirror.refresh(remote) is False

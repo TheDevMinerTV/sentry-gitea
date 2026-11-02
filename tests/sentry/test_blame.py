@@ -127,6 +127,19 @@ class TestBlame(SyncFixture):
         assert [b.commit.commitId for b in blamed] == [commit]
         assert (len(self.server.authorizations), len(responses.calls)) == requests
 
+    @responses.activate
+    @blame_settings
+    def test_a_push_makes_the_next_branch_blame_see_the_pushed_commit(self):
+        self.mock_lookup()
+        with self.tasks():
+            self.installation.get_blame_for_files([self.line(2)], extra={})
+        pushed = self.source.commit(
+            "Rework b", {"app.py": "a\nbb\nc\n"}, author=ALICE, when=timezone.now()
+        )
+        assert self.signed("push", self.push_payload()).status_code == 204
+        blamed = self.installation.get_blame_for_files([self.line(2)], extra={})
+        assert [b.commit.commitId for b in blamed] == [pushed]
+
     @blame_settings
     def test_setup_registers_gitea_for_commit_context_once_and_only_when_enabled(self):
         providers = post_process.COMMIT_CONTEXT_INTEGRATION_PROVIDERS

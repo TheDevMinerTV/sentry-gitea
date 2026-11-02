@@ -44,6 +44,13 @@ def stable_repo_id(repo: Any) -> int | None:
     return int(value) if value.isdigit() else None
 
 
+def mark_mirror_stale(repo: Any) -> None:
+    """After a push, a branch blame must fetch instead of reading the branch's old head."""
+    repo_id = stable_repo_id(repo)
+    if blame_enabled() and repo_id is not None and repo.integration_id is not None:
+        repository_mirror(repo.integration_id, repo_id).mark_stale()
+
+
 def remote_for(installation: Any, repo_id: int) -> Remote:
     client = installation.get_client()
     current = client.get_scm_repo(repo_id=repo_id)

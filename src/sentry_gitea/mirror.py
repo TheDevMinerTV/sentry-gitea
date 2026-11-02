@@ -144,6 +144,10 @@ class GitMirror:
         except MirrorBusy:
             return False
 
+    def mark_stale(self) -> None:
+        """Make the next refresh fetch, however recent the last fetch was."""
+        (self.path / FETCHED_STAMP).unlink(missing_ok=True)
+
     def resolve(self, ref: str) -> str | None:
         """The commit `ref` names in the mirror, or None."""
         if not ref or ref.startswith("-") or "\n" in ref:

@@ -283,7 +283,8 @@ How it behaves:
   clone finishes, blame skips that repository, so the first new issues after you turn the feature
   on can miss a suspect commit.
 - **Fetching.** A blame at a commit the mirror already has needs no network. A branch name, such as
-  the code mapping's default branch, fetches at most once every 5 minutes per mirror.
+  the code mapping's default branch, fetches at most once every 5 minutes per mirror, and always on
+  the first blame after a push webhook for that repository.
 - **Credentials.** Git authenticates with the installation's OAuth token in an
   `Authorization: Bearer` header taken from the environment. The token is never written to the
   mirror's configuration, and never appears in a process's arguments.
