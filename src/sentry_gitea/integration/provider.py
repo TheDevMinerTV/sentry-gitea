@@ -40,6 +40,7 @@ from .identity import (
 from .installation import GiteaIntegration
 from .pages import render_page
 from .repository import GiteaRepositoryProvider
+from .selection import REPOSITORIES_KEY, RepositoryChoice, parse_repository_ids, repository_choices
 from .utils import external_id
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,44 @@ class OwnerSelectionView:
                 pipeline,
                 "Unable to verify the Gitea owner. Start setup again with an owner account.",
             )
+
+
+class RepositorySelectionView:
+    @method_decorator(csrf_protect)
+    def dispatch(self, request: HttpRequest, pipeline: Any) -> HttpResponseBase:
+        try:
+            config = OAuthSettings.load()
+            state = pipeline.fetch_state("identity")
+            owner_id = int(issue_number(str(pipeline.fetch_state("owner")).partition(":")[2]))
+            with GiteaClient(
+                config.base_url, state["tokens"]["access_token"], token_type="Bearer"
+            ) as client:
+                choices = repository_choices(client.search_repositories(owner_id), owner_id)
+            # The owner form's POST renders this step too; only this form's own POST submits it.
+            if request.method == "POST" and request.POST.get("step") == "repositories":
+                chosen = chosen_repositories(choices, request.POST.getlist("repository"))
+                pipeline.bind_state(REPOSITORIES_KEY, chosen)
+                return pipeline.next_step()
+            if request.method not in {"GET", "POST"}:
+                return HttpResponse(status=405)
+            response = render_page(
+                request, "repository-choice.html", {"action": setup_path(), "repositories": choices}
+            )
+            response["Referrer-Policy"] = "origin"
+            return response
+        except (ConfigurationError, GiteaApiError, ValueError, KeyError, TypeError) as error:
+            log_failure(logger, "sentry-gitea: install failed", error)
+            return fail_pipeline(
+                pipeline,
+                "Unable to list the owner's Gitea repositories. Start setup again.",
+            )
+
+
+def chosen_repositories(choices: list[RepositoryChoice], values: list[str]) -> list[int]:
+    chosen = parse_repository_ids(values)
+    if not set(chosen) <= {choice.id for choice in choices}:
+        raise ValueError("Select repositories of the chosen owner that you administer.")
+    return chosen
 
 
 class GiteaIntegrationProvider(IntegrationProvider):
@@ -193,6 +232,7 @@ class GiteaIntegrationProvider(IntegrationProvider):
                 config={"redirect_url": setup_path()},
             ),
             OwnerSelectionView(),
+            RepositorySelectionView(),
         ]
 
     def build_integration(self, state: Mapping[str, Any]) -> dict[str, Any]:
@@ -227,9 +267,20 @@ class GiteaIntegrationProvider(IntegrationProvider):
                     "scopes": user_identity["scopes"],
                     "webhook_secret": previous.get("webhook_secret") or secrets.token_hex(32),
                 },
+                "post_install_data": {
+                    REPOSITORIES_KEY: parse_repository_ids(state[REPOSITORIES_KEY])
+                },
             }
         except (ConfigurationError, GiteaApiError, ValueError, KeyError, TypeError) as error:
             log_failure(logger, "sentry-gitea: install failed", error)
             raise IntegrationError(
                 "Unable to verify the Gitea owner. Start setup again with an owner account."
             ) from None
+
+    def post_install(
+        self, integration: Integration, organization: Any, *, extra: dict[str, Any]
+    ) -> None:
+        # Stored before the first sync, which this starts, so it imports only the chosen ones.
+        integration.get_installation(organization_id=organization.id).update_organization_config(
+            {REPOSITORIES_KEY: extra[REPOSITORIES_KEY]}
+        )

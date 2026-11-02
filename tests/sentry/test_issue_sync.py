@@ -58,7 +58,7 @@ class TestSyncConfiguration(SyncFixture):
         result = self.client.get(self.details_url())
         assert result.status_code == 200, result.data
         fields = {f["name"]: f for f in result.data["configOrganization"]}
-        assert set(fields) == {*OPTIONS, "user_mappings"}
+        assert set(fields) == {"repository_ids", *OPTIONS, "user_mappings"}
         assert all(fields[name]["type"] == "boolean" for name in OPTIONS)
         assert not any(fields[name]["default"] for name in OPTIONS)
         assert "Add Repository" in fields["sync_status_reverse"]["help"]

@@ -12,6 +12,7 @@ from django.db import router, transaction
 from django.db.models import Q
 from sentry import options
 from sentry.constants import ObjectStatus
+from sentry.deletions.models.scheduleddeletion import CellScheduledDeletion
 from sentry.integrations.models.integration import Integration
 from sentry.locks import locks
 from sentry.models.repository import Repository
@@ -28,6 +29,7 @@ from sentry_gitea.mirror import GitError
 
 from .blame import BLAME_FAILED, blame_enabled, repository_mirror, stable_repo_id
 from .identity import log_failure
+from .selection import is_selected, stored_selection
 from .source import repository_link_path, repository_url
 from .utils import repo_webhook_secret
 
@@ -70,6 +72,41 @@ def recorded_hook_ids(integration_id: int, repo_id: str, *, exclude_id: int | No
         for config in rows.values_list("config", flat=True)
         if isinstance(config, dict) and config.get("hook_id")
     }
+
+
+def remove_unselected_repositories(installation: Any) -> None:
+    """Schedule deletion of this organization's rows for repositories no longer selected.
+
+    Sentry's repository sync only disables rows the provider stops listing, keeps recently
+    active ones, and re-enables them without a hook. Deleting runs on_delete_repository, which
+    removes the hook and the mirror; selecting the repository again imports a fresh row.
+    """
+    selection = stored_selection(installation.org_integration.config)
+    if selection is None:
+        return
+    rows = Repository.objects.filter(
+        organization_id=installation.organization_id,
+        integration_id=installation.model.id,
+        provider=PROVIDER,
+        status__in=(ObjectStatus.ACTIVE, ObjectStatus.DISABLED),
+    )
+    for row in rows:
+        if not row.external_id.isdigit() or is_selected(selection, row.external_id):
+            continue
+        with transaction.atomic(using=router.db_for_write(Repository)):
+            claimed = Repository.objects.filter(
+                id=row.id, status__in=(ObjectStatus.ACTIVE, ObjectStatus.DISABLED)
+            ).update(status=ObjectStatus.PENDING_DELETION)
+            if not claimed:
+                continue
+            row.status = ObjectStatus.PENDING_DELETION
+            # Frees the external_id, so selecting the repository again imports it right away.
+            row.rename_on_pending_deletion()
+            CellScheduledDeletion.schedule(row, days=0)
+        logger.info(
+            "sentry-gitea: removing a deselected repository",
+            extra={"repository_id": row.id, "integration_id": installation.model.id},
+        )
 
 
 class GiteaRepositoryProvider(IntegrationRepositoryProvider):
@@ -125,6 +162,10 @@ class GiteaRepositoryProvider(IntegrationRepositoryProvider):
         installation = self.get_installation(installation_id, organization.id)
         with self._operation(installation, "get_repository") as client:
             data = client.get_scm_repo(path=identifier)
+        if not is_selected(stored_selection(installation.org_integration.config), data["id"]):
+            raise IntegrationError(
+                "Select this repository in the Gitea integration's settings first."
+            )
         permissions = data.get("permissions")
         if not isinstance(permissions, dict) or permissions.get("admin") is not True:
             raise IntegrationError(

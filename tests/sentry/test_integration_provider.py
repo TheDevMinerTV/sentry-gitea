@@ -21,7 +21,11 @@ from sentry.testutils.cases import APITestCase, IntegrationTestCase
 from sentry.testutils.silo import no_silo_test
 from sentry.users.models.identity import Identity
 
-from sentry_gitea.integration.provider import GiteaIntegrationProvider, OwnerSelectionView
+from sentry_gitea.integration.provider import (
+    GiteaIntegrationProvider,
+    OwnerSelectionView,
+    RepositorySelectionView,
+)
 from sentry_gitea.integration.utils import OAUTH_SCOPES
 
 BASE = "https://forge.example/git"
@@ -175,8 +179,13 @@ class TestIntegrationProvider(IntegrationFixture):
     @responses.activate
     def test_build_integration_and_reinstall_preserve_secret(self):
         self.mock_owners()
-        state = {"identity": {"tokens": TOKENS, "scopes": list(OAUTH_SCOPES)}, "owner": "org:8"}
+        state = {
+            "identity": {"tokens": TOKENS, "scopes": list(OAUTH_SCOPES)},
+            "owner": "org:8",
+            "repository_ids": [41],
+        }
         result = GiteaIntegrationProvider().build_integration(state)
+        assert result["post_install_data"] == {"repository_ids": [41]}
         assert result["external_id"] == self.integration.external_id
         assert result["idp_external_id"] == result["external_id"]
         assert result["name"] == "team"
@@ -190,7 +199,11 @@ class TestIntegrationProvider(IntegrationFixture):
     def test_personal_install_and_new_secret(self):
         self.mock_owners()
         result = GiteaIntegrationProvider().build_integration(
-            {"identity": {"tokens": TOKENS, "scopes": list(OAUTH_SCOPES)}, "owner": "user:2"}
+            {
+                "identity": {"tokens": TOKENS, "scopes": list(OAUTH_SCOPES)},
+                "owner": "user:2",
+                "repository_ids": [],
+            }
         )
         assert result["external_id"] == hashlib.sha256(f"v1|{BASE}|user|2".encode()).hexdigest()
         assert result["name"] == "alice"
@@ -256,6 +269,73 @@ class TestIntegrationProvider(IntegrationFixture):
         )
         assert response.status_code == 403
         assert not responses.calls
+
+    def picker(self):
+        return FakePipeline(
+            {"identity": {"tokens": TOKENS, "scopes": list(OAUTH_SCOPES)}, "owner": "org:8"}
+        )
+
+    def mock_owner_repositories(self):
+        administered = {**REPO, "permissions": {"admin": True}}
+        hostile = {**administered, "description": '<img src=x onerror="alert(1)">'}
+        read_only = {**REPO, "id": 42, "full_name": "team/read-only", "permissions": {}}
+        responses.get(
+            API + "/repos/search",
+            json={"data": [hostile, read_only]},
+            headers={"X-Total-Count": "2"},
+        )
+
+    @responses.activate
+    def test_repository_form_lists_administered_repositories_escaped_in_sentry_layout(self):
+        self.mock_owner_repositories()
+        request = RequestFactory().get("/extensions/gitea/setup/")
+        with self.assertTemplateUsed("sentry/bases/modal.html"):
+            response = RepositorySelectionView().dispatch(request, self.picker())
+        page = response.content.decode()
+        assert response.status_code == 200
+        assert re.findall(r'name="repository" value="([^"]+)"', page) == ["41"]
+        assert "team/repo" in page and "team/read-only" not in page
+        assert "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;" in page
+        assert "<img src=x" not in page
+        assert "csrfmiddlewaretoken" in page
+        assert response["Cache-Control"] == "no-store"
+        assert response["Referrer-Policy"] == "origin"
+        assert parse_qs(urlsplit(responses.calls[0].request.url).query)["uid"] == ["8"]
+
+    @responses.activate
+    def test_repository_form_binds_the_selection_and_rejects_other_repositories(self):
+        self.mock_owner_repositories()
+
+        def submit(pipeline, data):
+            request = RequestFactory().post("/extensions/gitea/setup/", data)
+            request._dont_enforce_csrf_checks = True
+            return RepositorySelectionView().dispatch(request, pipeline)
+
+        for chosen in (["42"], ["41", "999"], ["x"]):
+            pipeline = self.picker()
+            with self.assertLogs("sentry_gitea.integration.provider", level="WARNING"):
+                response = submit(pipeline, {"step": "repositories", "repository": chosen})
+            assert response.status_code == 400 and not pipeline.advanced
+        pipeline = self.picker()
+        response = submit(pipeline, {"owner": "org:8"})
+        assert b'name="repository" value="41"' in response.content, "the owner POST renders it"
+        assert not pipeline.advanced
+        submit(pipeline, {"step": "repositories", "repository": ["41"]})
+        assert pipeline.advanced and pipeline.data["repository_ids"] == [41]
+
+    @responses.activate
+    def test_repository_form_answers_other_methods_with_405_and_requires_csrf(self):
+        self.mock_owner_repositories()
+        request = RequestFactory().put("/extensions/gitea/setup/")
+        request._dont_enforce_csrf_checks = True
+        pipeline = self.picker()
+        assert RepositorySelectionView().dispatch(request, pipeline).status_code == 405
+        responses.calls.reset()
+        request = RequestFactory().post(
+            "/extensions/gitea/setup/", {"step": "repositories", "repository": ["41"]}
+        )
+        assert RepositorySelectionView().dispatch(request, pipeline).status_code == 403
+        assert not pipeline.advanced and not responses.calls
 
     @responses.activate
     def test_builder_rejects_tampered_owner_without_echoing_input(self):
@@ -332,14 +412,42 @@ class TestGiteaInstallPipeline(IntegrationTestCase):
         assert b"user:2" in form.content and b'name="csrfmiddlewaretoken"' in form.content
         csrf = re.search(r'name="csrfmiddlewaretoken"\s+value="([^"]+)"', form.content.decode())
         assert csrf is not None
-        finish = self.client.post(
+        personal = {
+            **REPO,
+            "full_name": "alice/repo",
+            "owner": {"id": 2, "login": "alice"},
+            "permissions": {"admin": True},
+        }
+        responses.get(
+            API + "/repos/search",
+            json={"data": [personal, {**personal, "id": 43, "full_name": "alice/other"}]},
+            headers={"X-Total-Count": "2"},
+        )
+        picker = self.client.post(
             self.setup_path, {"owner": "user:2", "csrfmiddlewaretoken": csrf[1]}
         )
+        assert picker.status_code == 200
+        assert picker["Referrer-Policy"] == "origin" and picker["Cache-Control"] == "no-store"
+        assert re.findall(r'name="repository" value="(\d+)"', picker.content.decode()) == [
+            "43",
+            "41",
+        ]
+        rejected = self.client.post(self.setup_path, {"step": "repositories", "repository": ["43"]})
+        assert rejected.status_code == 403, "the repository form is CSRF-protected"
+        with patch(
+            "sentry.integrations.source_code_management.sync_repos.sync_repos_for_org.apply_async"
+        ) as first_sync:
+            finish = self.client.post(
+                self.setup_path,
+                {"step": "repositories", "repository": ["43"], "csrfmiddlewaretoken": csrf[1]},
+            )
         self.assertDialogSuccess(finish)
         installed = Integration.objects.get(provider="gitea", name="alice")
         association = OrganizationIntegration.objects.get(
             integration_id=installed.id, organization_id=self.organization.id
         )
+        assert association.config["repository_ids"] == [43]
+        first_sync.assert_called_once_with(kwargs={"organization_integration_id": association.id})
         stored_identity = Identity.objects.get(id=association.default_auth_id)
         assert stored_identity.data["access_token"] == TOKEN
         assert stored_identity.data["refresh_token"] == REFRESH

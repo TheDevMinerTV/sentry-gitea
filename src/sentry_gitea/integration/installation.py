@@ -11,7 +11,11 @@ from sentry.integrations.source_code_management.commit_context import (
     FileBlameInfo,
     SourceLineInfo,
 )
-from sentry.shared_integrations.exceptions import ApiError, IntegrationError
+from sentry.shared_integrations.exceptions import (
+    ApiError,
+    IntegrationError,
+    IntegrationFormError,
+)
 from sentry.users.models.identity import Identity
 
 from sentry_gitea.api.errors import GiteaApiError
@@ -20,6 +24,14 @@ from .blame import blame_for_files
 from .client import GiteaIntegrationClient, api_error
 from .issue_sync import GiteaIssueSync
 from .issues import GiteaIssues
+from .repository import remove_unselected_repositories
+from .selection import (
+    REPOSITORIES_KEY,
+    is_selected,
+    parse_repository_ids,
+    repository_choices,
+    stored_selection,
+)
 from .source import GiteaSource
 
 
@@ -59,15 +71,65 @@ class GiteaIntegration(GiteaIssueSync, GiteaIssues, GiteaSource, CommitContextIn
     ) -> list[dict[str, Any]]:
         with self._issue_operation():
             rows = self.get_client().search_repositories(query, page_number_limit, issues=False)
-            return [
-                {
-                    "identifier": row["full_name"],
-                    "name": row["full_name"],
-                    "external_id": str(row["id"]),
-                    "default_branch": row.get("default_branch") or "main",
-                }
-                for row in rows
+        selection = self._selection()
+        return [
+            {
+                "identifier": row["full_name"],
+                "name": row["full_name"],
+                "external_id": str(row["id"]),
+                "default_branch": row.get("default_branch") or "main",
+            }
+            for row in rows
+            if is_selected(selection, row["id"])
+        ]
+
+    def _selection(self) -> frozenset[int] | None:
+        return stored_selection(self.org_integration.config if self.org_integration else None)
+
+    def get_organization_config(self) -> list[dict[str, Any]]:
+        selection = self._selection()
+        field: dict[str, Any] = {
+            "name": REPOSITORIES_KEY,
+            "type": "select",
+            "multiple": True,
+            "label": "Repositories",
+            "help": (
+                "Repository sync imports only these repositories and installs their webhooks. "
+                "Removing one deletes its Sentry repository, with its commits and code mappings, "
+                "its webhook and its blame mirror."
+            ),
+        }
+        try:
+            with self._issue_operation():
+                rows = self.get_client().search_repositories(issues=False)
+            choices = repository_choices(rows, self.model.metadata["owner_id"])
+            field["choices"] = [[choice.id, choice.full_name] for choice in choices]
+        except IntegrationError:
+            # Saving a list built without Gitea's answer could delete every repository.
+            field["choices"] = [
+                [repo_id, f"Repository {repo_id}"] for repo_id in sorted(selection or ())
             ]
+            field["disabled"] = True
+            field["disabledReason"] = "Gitea could not list the repositories right now."
+        if selection is None:
+            field["default"] = [repo_id for repo_id, _ in field["choices"]]
+        return [field, *super().get_organization_config()]
+
+    def update_organization_config(self, data: Any) -> None:
+        data = dict(data)
+        if REPOSITORIES_KEY in data:
+            try:
+                data[REPOSITORIES_KEY] = parse_repository_ids(data[REPOSITORIES_KEY])
+            except ValueError as error:
+                raise IntegrationFormError({REPOSITORIES_KEY: [str(error)]}) from None
+        super().update_organization_config(data)
+        if REPOSITORIES_KEY in data and self.org_integration is not None:
+            remove_unselected_repositories(self)
+            from sentry.integrations.source_code_management.sync_repos import sync_repos_for_org
+
+            sync_repos_for_org.apply_async(
+                kwargs={"organization_integration_id": self.org_integration.id}
+            )
 
     def _get_debug_metadata_keys(self) -> list[str]:
         return ["base_url", "owner_kind", "owner_id", "owner_login"]

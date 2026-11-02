@@ -12,6 +12,7 @@ import responses
 from django.test import override_settings
 from django.utils import timezone
 from git_fixtures import ALICE, BOB, GIT_AVAILABLE, serve, source_repo
+from sentry.deletions.tasks.scheduled import run_scheduled_deletions
 from sentry.integrations.source_code_management.commit_context import (
     CommitContextIntegration,
     SourceLineInfo,
@@ -190,6 +191,28 @@ class TestBlame(SyncFixture):
         assert path.is_dir(), "another organization still uses the mirror"
         self.repo.delete()
         provider.on_delete_repository(shared)
+        assert not path.exists()
+
+    @responses.activate
+    @blame_settings
+    def test_deselecting_a_repository_deletes_its_mirror(self):
+        self.mock_lookup()
+        with self.tasks():
+            self.installation.get_blame_for_files([self.line(2)], extra={})
+        path = mirror_path(self.mirrors, self.integration.id, 41)
+        assert path.is_dir()
+        api = self.server.url + "/api/v1"
+        responses.get(
+            api + "/repos/search", json={"data": [WEBHOOK_REPO]}, headers={"X-Total-Count": "1"}
+        )
+        responses.delete(api + "/repos/team/repo/hooks/4", status=204)
+        with self.tasks():
+            self.installation.update_organization_config({"repository_ids": []})
+        with (
+            self.tasks(),
+            patch("sentry.deletions.defaults.repository.notify_seer_repository_deleted"),
+        ):
+            run_scheduled_deletions()
         assert not path.exists()
 
     @responses.activate

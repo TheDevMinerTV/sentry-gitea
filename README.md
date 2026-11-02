@@ -231,19 +231,26 @@ Details, label colors, recovery semantics and logging: [docs/PLUGINS.md](docs/PL
    Sentry 26.10's install dialog only knows Sentry's built-in providers, so the button opens this
    package's own page, `<Sentry URL>/extensions/gitea/install/`, in a new tab. If you belong to several
    organizations, choose one there. Authorize in Gitea, then pick your own namespace or a Gitea
-   organization **you own**. Team admin is not enough. The tab closes itself when the installation is
-   done; reload the integration's page in Sentry.
+   organization **you own**. Team admin is not enough. Next, tick the owner's repositories that Sentry
+   should import; the list shows only repositories you administer. The tab closes itself when the
+   installation is done; reload the integration's page in Sentry.
 4. On any Sentry issue, use the Gitea issue actions to **Create** or **Link**.
 5. Optional features:
-   - **Repositories:** Sentry 26.10 has no Add Repository form. It imports every repository of the
-     installed owner that the authorizing user administers through its repository sync: in **Organization Settings → Repositories**, hover
-     the Gitea owner's repository count and click **Sync now**, or wait for Sentry's daily sync.
+   - **Repositories:** Sentry 26.10 has no Add Repository form. Its repository sync imports the
+     installed owner's **selected** repositories that the authorizing user administers. The install
+     picker stores the selection; change it later in the integration's settings under
+     **Repositories**. Saving it starts a sync. Installations made before the picker existed have no
+     stored selection and import every repository, as before. To sync again, go to
+     **Organization Settings → Repositories**, hover the Gitea owner's repository count and click
+     **Sync now**, or wait for Sentry's daily sync. Removing a repository from the selection deletes
+     its Sentry repository (with its commits and code mappings), its webhook and its blame mirror.
      Repositories that disappear from the owner are disabled at the next sync. Each repository gets
      one webhook (push, issue, issue-assignment and pull-request events) at
      `<prefix>/extensions/gitea/webhook/<integration id>/<Gitea repository id>/`, signed with a secret
      derived for that repository, which needs **repository admin** rights. To add a single repository
      instead, use the API: `POST /api/0/organizations/<org>/repos/` with
-     `provider=integrations:gitea`, `installation=<integration id>` and `identifier=owner/name`. Then
+     `provider=integrations:gitea`, `installation=<integration id>` and `identifier=owner/name`; the
+     repository must be in the selection. Then
      check a delivery's response code in the repository's **Settings → Webhooks** page in Gitea.
      Deleting the repository in Sentry removes the hook.
    - **Sync:** in the integration's configuration, turn on any of `sync_status_forward`,
@@ -276,8 +283,9 @@ How it behaves:
 
 - **Disk.** Each mirror is a full bare clone with all branches and tags, at
   `<GITEA_BLAME_MIRROR_DIR>/<integration id>/<Gitea repository id>.git`. Plan for roughly the size
-  of the repositories in Gitea. Deleting the repository in Sentry deletes its mirror, unless
-  another organization still uses the same repository through the same installation.
+  of the selected repositories in Gitea; unselected repositories are never cloned. Deleting the
+  repository in Sentry, or removing it from the selection, deletes its mirror, unless another
+  organization still uses the same repository through the same installation.
 - **Cloning.** Adding a repository, or the first blame for it, queues the
   `sentry_gitea.integration.mirror_repository` task, which may run for up to 25 minutes. Until the
   clone finishes, blame skips that repository, so the first new issues after you turn the feature
