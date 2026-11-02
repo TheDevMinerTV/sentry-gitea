@@ -81,7 +81,7 @@ or both together. Their issue links are stored separately and are not migrated b
 | Blame / commit-context suspect commits | No | Opt-in (`GITEA_BLAME_ENABLED`), `git blame` on local mirrors |
 | Pull-request comment bot | No | **Not supported** |
 | Alert-rule "create ticket" action | n/a | **Not supported** |
-| Gitea name and icon in Sentry's UI | n/a | **Not supported** (blank name, generic icon) |
+| Gitea name and icon in Sentry's UI | n/a | **Not supported** (blank name, generic icon; the issue menu shows the owner's location) |
 | Sentry SaaS, or control/cell (hybrid cloud) deployments | **Not supported** | **Not supported** |
 
 ### Limitations
@@ -98,7 +98,8 @@ or both together. Their issue links are stored separately and are not migrated b
 - **Comments made in Gitea are not imported** into Sentry.
 - **The Gitea provider shows up with a blank name and a generic icon** in parts of Sentry's
   prebuilt frontend, such as the issue sidebar. Those mappings are compiled into the frontend and a
-  Python package cannot change them. Backend forms and APIs work normally.
+  Python package cannot change them. The **Link issue** menu shows the owner's location, such as
+  `gitea.example/team`, under the blank name. Backend forms and APIs work normally.
 - **One Gitea instance and OAuth app per Sentry deployment** for the integration. The plugins can point
   each project at any allowed Gitea URL. There is no PAT fallback for the integration, and no migration
   of links between the plugins and the integration.
@@ -393,6 +394,10 @@ Report vulnerabilities privately: [SECURITY.md](SECURITY.md).
 5. Check that `GET <sentry>/extensions/gitea/ping/` reports the new version.
 
 If a release changes the webhook URL or signing, add each Gitea repository to Sentry again (the same
+`./install.sh` runs `sentry upgrade`, which also fills in data that a new release adds to existing
+installations, such as the owner location shown in the **Link issue** menu. If you restart the services
+without `./install.sh`, run `docker compose run --rm web upgrade --noinput` once.
+
 `POST /api/0/organizations/<org>/repos/` call): adding an existing repository repairs its hook.
 
 ## Uninstall

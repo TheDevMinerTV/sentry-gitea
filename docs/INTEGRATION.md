@@ -559,8 +559,16 @@ Not supported:
 
 Sentry's prebuilt frontend has fixed provider-name/icon mappings. **The issue sidebar can show
 a blank provider name and a generic icon for Gitea.** The backend catalog and generic forms still use
-the registered provider. Python package installation cannot add a branded entry to those frontend
-mappings or to fixed source-code-management provider filters.
+the registered provider. The **Link issue** menu shows each installation's `domain_name` under that
+blank name, and the owner name too when the menu offers several Gitea owners. The integration stores
+`domain_name` as `<GITEA_PUBLIC_URL without https://>/<owner>`, for example `gitea.example/team`;
+with a plain-HTTP URL it keeps the `http://` scheme, because the integration's settings page links a
+`domain_name` without a scheme over HTTPS. Install and reinstall set it. `sentry upgrade`, which
+self-hosted's `install.sh` runs, sets it for installations made before this release, from the
+public URL and owner stored at install time; it does not contact Gitea. With `SKIP_SENTRY_MIGRATIONS`
+set, `install.sh` skips `sentry upgrade`; run `docker compose run --rm web upgrade --noinput` then.
+Python package installation cannot add a branded entry to those frontend mappings or to fixed
+source-code-management provider filters.
 
 Legacy plugin links are separate from modern integration links. To move a project, explicitly link
 its existing Gitea issues through this integration and disable any duplicate legacy automatic filing.
@@ -574,7 +582,8 @@ Our logs use `sentry_gitea.integration.*` and the prefixes `sentry-gitea: instal
 `sentry-gitea: webhook rejected` (with `reason` `url`, `integration`, `signature`, `payload` or
 `repository`), `sentry-gitea: webhook ignored`, `sentry-gitea: backfill incomplete` and
 `sentry-gitea: sync failed` (with `operation`), `sentry-gitea: blame failed` (with `operation`) and
-`sentry-gitea: blame skipped, mirror not ready` (INFO).
+`sentry-gitea: blame skipped, mirror not ready` (INFO), and `sentry-gitea: domain name backfill
+skipped` (with `integration_id`) and `sentry-gitea: domain name backfill failed` from `sentry upgrade`.
 Diagnostic extras contain IDs, status and error type; they omit request and response bodies,
 tokens, authorization codes, state, verifiers and secrets.
 

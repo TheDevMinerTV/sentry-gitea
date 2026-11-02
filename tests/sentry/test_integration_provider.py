@@ -191,7 +191,7 @@ class TestIntegrationProvider(IntegrationFixture):
         assert result["external_id"] == self.integration.external_id
         assert result["idp_external_id"] == result["external_id"]
         assert result["name"] == "team"
-        assert result["metadata"] == METADATA
+        assert result["metadata"] == {**METADATA, "domain_name": "public-forge.example/git/team"}
         assert result["user_identity"]["data"] == TOKENS
         assert result["user_identity"]["external_id"] == f"{BASE}|2"
         assert result["user_identity"]["scopes"] == list(OAUTH_SCOPES)

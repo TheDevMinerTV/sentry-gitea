@@ -7,6 +7,7 @@ import secrets
 from collections.abc import Mapping
 from typing import Any
 
+from django.db import router, transaction
 from django.http import HttpRequest, HttpResponse, HttpResponseBase
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_protect
@@ -23,8 +24,9 @@ from sentry.integrations.models.organization_integration import OrganizationInte
 from sentry.pipeline.views.nested import NestedPipelineView
 from sentry.plugins.base import bindings
 from sentry.shared_integrations.exceptions import IntegrationError
+from sentry.signals import post_upgrade
 
-from sentry_gitea.api.client import GiteaClient, issue_number, normalize_repo
+from sentry_gitea.api.client import GiteaClient, issue_number, normalize_repo, owner_domain_name
 from sentry_gitea.api.errors import GiteaApiError
 from sentry_gitea.meta import AUTHOR, ISSUES_URL, PROJECT_URL
 
@@ -182,6 +184,35 @@ def chosen_repositories(choices: list[RepositoryChoice], values: list[str]) -> l
     return chosen
 
 
+def backfill_domain_names(**kwargs: Any) -> None:
+    """Give installations made before `domain_name` existed theirs, without a reinstall."""
+    try:
+        _backfill_domain_names()
+    except Exception as error:
+        # A display name must never fail `sentry upgrade`, which would stop install.sh.
+        log_failure(logger, "sentry-gitea: domain name backfill failed", error)
+
+
+def _backfill_domain_names() -> None:
+    with transaction.atomic(router.db_for_write(Integration)):
+        rows = Integration.objects.select_for_update().filter(provider=GiteaIntegrationProvider.key)
+        for integration in rows:
+            metadata = integration.metadata
+            if metadata.get("domain_name"):
+                continue
+            try:
+                domain_name = owner_domain_name(metadata["public_url"], metadata["owner_login"])
+            except (KeyError, ValueError):
+                logger.warning(
+                    "sentry-gitea: domain name backfill skipped",
+                    extra={"integration_id": integration.id},
+                )
+                continue
+            Integration.objects.filter(id=integration.id).update(
+                metadata={**metadata, "domain_name": domain_name}
+            )
+
+
 class GiteaIntegrationProvider(IntegrationProvider):
     key = "gitea"
     name = "Gitea"
@@ -258,6 +289,11 @@ class GiteaIntegrationProvider(IntegrationProvider):
 
             if self.key not in post_process.COMMIT_CONTEXT_INTEGRATION_PROVIDERS:
                 post_process.COMMIT_CONTEXT_INTEGRATION_PROVIDERS.append(self.key)
+        # `sentry upgrade`, which self-hosted's install.sh runs on every upgrade, sends this
+        # after migrating, so the database is ready and no request waits for the backfill.
+        post_upgrade.connect(
+            backfill_domain_names, dispatch_uid="sentry-gitea-domain-names", weak=False
+        )
 
     def get_pipeline_views(self) -> list[Any]:
         return [
@@ -300,6 +336,7 @@ class GiteaIntegrationProvider(IntegrationProvider):
                     "owner_kind": owner["kind"],
                     "owner_id": owner["id"],
                     "owner_login": owner["login"],
+                    "domain_name": owner_domain_name(config.public_url, owner["login"]),
                     "scopes": user_identity["scopes"],
                     "webhook_secret": previous.get("webhook_secret") or secrets.token_hex(32),
                 },
