@@ -417,6 +417,12 @@ implements Sentry's commit-context interface by running `git blame` on a local m
 image has no `git`; install it in `sentry/enhance-image.sh` (see
 [`enhance-image.sh`](../docker/enhance-image.sh) and the README).
 
+With the setting off, the integration never runs git and never creates a mirror. Sentry can still
+ask it for blame: once any provider on Sentry's list (GitHub, GitLab) qualifies a project, Sentry
+asks every code mapping's integration that implements the commit-context interface, Gitea's
+included. The installation answers with no blame, and a `mirror_repository` task queued before the
+setting was turned off returns without work.
+
 For a new issue in a project with a Gitea code mapping, Sentry maps each in-app frame to a file and
 line on the mapping's branch and asks the integration for blame. The integration then works per
 repository:

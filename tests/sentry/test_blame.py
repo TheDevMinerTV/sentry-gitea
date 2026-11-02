@@ -17,6 +17,7 @@ from sentry.integrations.source_code_management.commit_context import (
     CommitContextIntegration,
     SourceLineInfo,
 )
+from sentry.integrations.utils.commit_context import find_commit_context_for_event_all_frames
 from sentry.models.commit import Commit
 from sentry.models.groupowner import GroupOwner, GroupOwnerType
 from sentry.tasks import post_process
@@ -26,6 +27,7 @@ from sync_fixtures import WEBHOOK_REPO, SyncFixture
 
 from sentry_gitea.integration.provider import GiteaIntegrationProvider
 from sentry_gitea.integration.repository import GiteaRepositoryProvider
+from sentry_gitea.integration.tasks import mirror_repository
 from sentry_gitea.mirror import FETCHED_STAMP, mirror_path
 
 TOKEN = "synthetic-integration-access"
@@ -223,3 +225,42 @@ class TestBlame(SyncFixture):
         with self.tasks(), self.capture_on_commit_callbacks(execute=True):
             provider.on_create_repository(self.repo, self.organization)
         assert mirror_path(self.mirrors, self.integration.id, 41).is_dir()
+
+    @responses.activate
+    @blame_settings
+    def test_commit_context_for_another_providers_mapping_leaves_gitea_alone_with_blame_off(self):
+        # Sentry reaches the Gitea mapping whenever another provider of the project qualifies.
+        self.mock_lookup()
+        with self.tasks():
+            self.installation.get_blame_for_files([self.line(2)], extra={})
+        stamp = mirror_path(self.mirrors, self.integration.id, 41) / FETCHED_STAMP
+        os.utime(stamp, (0, 0))
+        requests = len(self.server.authorizations), len(responses.calls)
+        frames = [{"filename": "app.py", "abs_path": "app.py", "lineno": 2, "in_app": True}]
+        with (
+            override_settings(GITEA_BLAME_ENABLED=False),
+            patch("sentry_gitea.integration.tasks.mirror_repository.delay") as queued,
+            patch("sentry_gitea.mirror._spawn") as git,
+        ):
+            blame, install = find_commit_context_for_event_all_frames(
+                code_mappings=[self.code_mapping],
+                frames=frames,
+                organization_id=self.organization.id,
+                project_id=self.project.id,
+                platform="python",
+                sdk_name=None,
+                commit_date_max=timezone.now(),
+                extra={"event": "a" * 32, "group": 1},
+            )
+        assert (blame, install) == (None, None)
+        assert not queued.called and not git.called
+        assert (len(self.server.authorizations), len(responses.calls)) == requests
+
+    @responses.activate
+    @blame_settings
+    def test_a_mirror_task_queued_before_blame_was_turned_off_does_nothing(self):
+        self.mock_lookup()
+        with override_settings(GITEA_BLAME_ENABLED=False):
+            mirror_repository(repository_id=self.repo.id)
+        assert not self.mirrors.exists()
+        assert self.server.authorizations == []

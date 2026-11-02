@@ -20,7 +20,7 @@ from sentry.users.models.identity import Identity
 
 from sentry_gitea.api.errors import GiteaApiError
 
-from .blame import blame_for_files
+from .blame import blame_enabled, blame_for_files
 from .client import GiteaIntegrationClient, api_error
 from .issue_sync import GiteaIssueSync
 from .issues import GiteaIssues
@@ -45,6 +45,10 @@ class GiteaIntegration(GiteaIssueSync, GiteaIssues, GiteaSource, CommitContextIn
     def get_blame_for_files(
         self, files: Sequence[SourceLineInfo], extra: dict[str, Any]
     ) -> list[FileBlameInfo]:
+        # Sentry blames every code mapping of a project once one listed provider qualifies, and
+        # checks each integration only by type, so this class is asked even with blame off.
+        if not blame_enabled():
+            return []
         return blame_for_files(self, files)
 
     def on_create_or_update_comment_error(self, api_error: ApiError, metrics_base: str) -> bool:

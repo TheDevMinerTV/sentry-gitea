@@ -33,7 +33,7 @@ from sentry_gitea.api.client import is_sha
 from sentry_gitea.api.webhooks import PayloadError, is_zero_sha, normalize_api_commit
 from sentry_gitea.mirror import CLONE_TIMEOUT, GitError
 
-from .blame import BLAME_FAILED, sync_mirror
+from .blame import BLAME_FAILED, blame_enabled, sync_mirror
 from .commits import store_commits
 from .identity import ConfigurationError, GiteaIdentityProvider, OAuthSettings, log_failure
 from .repository import PROVIDER, SYNC_FAILED, GiteaRepositoryProvider
@@ -205,6 +205,8 @@ def refresh_identities() -> None:
     silo_mode=SiloMode.CELL,
 )
 def mirror_repository(repository_id: int) -> None:
+    if not blame_enabled():
+        return  # Queued before blame was turned off.
     repo = Repository.objects.filter(
         id=repository_id, provider=PROVIDER, status=ObjectStatus.ACTIVE
     ).first()
