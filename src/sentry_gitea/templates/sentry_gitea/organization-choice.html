@@ -1,0 +1,24 @@
+{% extends "sentry/bases/modal.html" %}
+
+{% block wrapperclass %}narrow auth{% endblock %}
+{% block title %}Install Gitea | {{ block.super }}{% endblock %}
+
+{% block main %}
+<h3>Choose a Sentry organization</h3>
+<p>Install Gitea into an organization you manage.</p>
+<form method="get" class="form-stacked">
+  <div class="form-group">
+    <label for="organization" class="control-label">Organization</label>
+    <div class="controls">
+      <select name="organization" id="organization" class="form-control" required>
+        {% for organization in organizations %}
+        <option value="{{ organization.slug }}">{{ organization.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+  <fieldset class="form-actions">
+    <button type="submit" class="btn btn-primary">Continue</button>
+  </fieldset>
+</form>
+{% endblock %}
