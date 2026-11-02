@@ -174,7 +174,10 @@ inline code in the generated description, so they cannot @mention Gitea users or
 links. The form does not show the hidden `sentry-gitea-meta v1` block that identifies the Sentry
 issue: it carries signed context for the Sentry issue in a hidden field (valid for 24 hours), and
 the integration appends the block when it files the issue. Any block typed into the description
-is removed first, so an edited description can neither drop nor forge it. Before creating, the
+is removed first, so an edited description can neither drop nor forge it. Text that would still
+form a block afterwards (an unclosed block, or one that removing another block joined together)
+has its `sentry-gitea-meta` keyword rewritten as `sentry_gitea_meta`. Finding and removing blocks
+takes time linear in the description's length. Before creating, the
 integration searches the selected repository for an issue with that block; if it finds one, it
 links that issue instead of filing a duplicate. A create that failed after Gitea had already filed
 the issue, or a form submitted twice, therefore files one issue. This also applies after an

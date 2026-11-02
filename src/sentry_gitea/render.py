@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
@@ -17,7 +17,10 @@ MAX_PATHS = 3
 MAX_COMMITS_SCANNED = 250
 MAX_COMMITS_RENDERED = 5
 MAX_LABELS = 20
-_META = re.compile(r"<!--\s*sentry-gitea-meta v1\s+(.*?)\s*-->", re.DOTALL)
+META_KEYWORD = "sentry-gitea-meta"
+_META_OPEN = "<!--"
+_META_TAG = f"{META_KEYWORD} v1"
+_META_CLOSE = "-->"
 
 
 @dataclass(frozen=True)
@@ -139,9 +142,9 @@ def render_metadata(event: EventData) -> str:
 def parse_metadata(body: str, *, dedup_id: str | None = None) -> dict[str, Any] | None:
     if not isinstance(body, str):
         return None
-    for match in _META.finditer(body):
+    for _start, _end, payload in _metadata_markers(body):
         try:
-            value = json.loads(match.group(1))
+            value = json.loads(payload)
         except (ValueError, RecursionError):
             continue
         if (
@@ -154,11 +157,48 @@ def parse_metadata(body: str, *, dedup_id: str | None = None) -> dict[str, Any] 
     return None
 
 
+def _metadata_markers(body: str) -> Iterator[tuple[int, int, str]]:
+    """Start, end and payload of each `<!-- sentry-gitea-meta v1 <payload> -->` marker, in linear
+    time: the payload ends at the first `-->`, and markers do not overlap."""
+    earliest = 0
+    close = -1
+    tag = body.find(_META_TAG)
+    while tag != -1:
+        opened = tag
+        while opened > earliest and body[opened - 1].isspace():
+            opened -= 1
+        start = opened - len(_META_OPEN)
+        payload = tag + len(_META_TAG)
+        if (
+            start >= earliest
+            and body.startswith(_META_OPEN, start)
+            and body[payload : payload + 1].isspace()
+        ):
+            # A later marker never ends before an earlier one, so one search serves them all.
+            if close < payload + 1:
+                close = body.find(_META_CLOSE, payload + 1)
+            if close == -1:
+                return
+            yield start, close + len(_META_CLOSE), body[payload:close].strip()
+            earliest = close + len(_META_CLOSE)
+            tag = body.find(_META_TAG, earliest)
+        else:
+            tag = body.find(_META_TAG, tag + 1)
+
+
 def strip_metadata(body: str) -> str:
-    # Repeat until stable: removing one marker can join the text around it into another.
-    while (stripped := _META.sub("", body)) != body:
-        body = stripped
-    return body
+    """`body` without metadata markers, or any remnant of one."""
+    kept: list[str] = []
+    copied = 0
+    for start, end, _payload in _metadata_markers(body):
+        kept.append(body[copied:start])
+        copied = end
+    kept.append(body[copied:])
+    stripped = "".join(kept)
+    # What is left could be a marker that removing another one joined together, or an unclosed
+    # one that would swallow the marker appended after it. The keyword, rewritten, cannot form
+    # either: no copy of it overlaps another or the replacement.
+    return stripped.replace(META_KEYWORD, "sentry_gitea_meta")
 
 
 def ensure_metadata(body: str, event: EventData) -> str:

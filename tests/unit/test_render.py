@@ -1,5 +1,8 @@
+import functools
 import json
+import random
 import re
+import time
 from dataclasses import replace
 
 import pytest
@@ -20,6 +23,7 @@ from sentry_gitea.render import (
     render_fix_hint,
     render_title,
     resolve_release,
+    strip_metadata,
 )
 
 
@@ -276,6 +280,55 @@ def test_stripping_a_marker_cannot_reassemble_a_forged_one(event):
     updated = ensure_metadata(body, event)
     assert parse_metadata(updated, dedup_id="https://s/1/999") is None
     assert parse_metadata(updated, dedup_id="x") is None
+    assert updated.count("sentry-gitea-meta") == 1
+    assert parse_metadata(updated)["dedup_id"] == event.dedup_id
+
+
+# The marker grammar as a regular expression: exact, but superlinear on unclosed markers.
+MARKER_ORACLE = re.compile(r"<!--\s*sentry-gitea-meta v1\s+(.*?)\s*-->", re.DOTALL)
+TOKENS = ["<!--", "<!-", "-->", "-", " ", "\n", "sentry-gitea-meta v1", "sentry-gitea-", "meta v1"]
+TOKENS += ['{"source":"sentry","dedup_id":"x"}', "x"]
+
+
+def test_markers_are_found_and_stripped_as_the_marker_grammar_defines():
+    rng = random.Random(7)
+    for _ in range(3000):
+        body = "".join(rng.choice(TOKENS) for _ in range(rng.randint(0, 14)))
+        expected = next(
+            (
+                json.loads(m.group(1))
+                for m in MARKER_ORACLE.finditer(body)
+                if m.group(1) == TOKENS[9]
+            ),
+            None,
+        )
+        assert parse_metadata(body) == expected, body
+        stripped = strip_metadata(body)
+        assert "sentry-gitea-meta" not in stripped, body
+        if "sentry-gitea-meta" not in MARKER_ORACLE.sub("", body):
+            assert stripped == MARKER_ORACLE.sub("", body), body
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param("<!-- sentry-gitea-meta v1 " * 4000, id="unclosed markers"),
+        pytest.param("<!-- sentry-gitea-meta v1 " + " " * 2000, id="unclosed whitespace"),
+        pytest.param(
+            functools.reduce(
+                lambda inner, _: f"<!-{inner}- sentry-gitea-meta v1 {{}} -->",
+                range(9000),
+                "<!-- sentry-gitea-meta v1 {} -->",
+            ),
+            id="nested markers",
+        ),
+    ],
+)
+def test_marker_handling_is_linear_in_the_body_length(body, event):
+    started = time.perf_counter()
+    parse_metadata(body)
+    updated = ensure_metadata(body, event)
+    assert time.perf_counter() - started < 0.2
     assert updated.count("sentry-gitea-meta") == 1
     assert parse_metadata(updated)["dedup_id"] == event.dedup_id
 
