@@ -11,7 +11,7 @@ import pytest
 import responses
 from django.test import override_settings
 from django.utils import timezone
-from git_fixtures import ALICE, BOB, GIT_AVAILABLE, serve, source_repo
+from git_fixtures import ALICE, BOB, GIT_AVAILABLE, git, serve, source_repo
 from sentry.deletions.tasks.scheduled import run_scheduled_deletions
 from sentry.integrations.source_code_management.commit_context import (
     CommitContextIntegration,
@@ -304,3 +304,26 @@ class TestBlame(SyncFixture):
             assert self.signed("push", self.push_payload()).status_code == 204
         blamed = self.installation.get_blame_for_files([self.line(2)], extra={})
         assert [b.commit.commitId for b in blamed] == [pushed]
+
+    @responses.activate
+    @blame_settings
+    def test_the_mirror_task_keeps_only_the_default_branch_and_mapped_refs(self):
+        self.mock_lookup()
+        first = self.source.commits["Add app"]
+        self.source.branch("feature", first)
+        self.source.tag("v1", first, annotated=True)
+        self.source.tag("v2", first)
+        other = self.create_project(organization=self.organization)
+        self.create_code_mapping(
+            project=other,
+            repo=self.repo,
+            organization_integration=self.org_integration,
+            default_branch="v1",
+            stack_root="other/",
+        )
+        mirror_repository(repository_id=self.repo.id)
+        path = mirror_path(self.mirrors, self.integration.id, 41)
+        listed = git(path, "for-each-ref", "--format=%(refname)").splitlines()
+        assert sorted(listed) == ["refs/heads/main", "refs/tags/v1"]
+        blamed = self.installation.get_blame_for_files([self.line(1, ref="v1")], extra={})
+        assert [b.commit.commitId for b in blamed] == [first]

@@ -5,7 +5,7 @@ import time
 from datetime import UTC, datetime
 
 import pytest
-from git_fixtures import ALICE, BOB, GIT_AVAILABLE, redirect_to, serve, source_repo
+from git_fixtures import ALICE, BOB, GIT_AVAILABLE, git, redirect_to, serve, source_repo
 
 from sentry_gitea import mirror as mirror_module
 from sentry_gitea.mirror import (
@@ -161,7 +161,7 @@ def test_a_branch_wins_over_a_tag_of_the_same_name_and_only_exact_names_resolve(
     repo.tag("main", first, annotated=True)
     repo.tag("v1", first, annotated=True)
     repo.branch("refs/heads/main", first)
-    mirror.clone(remote)
+    mirror.clone(remote, ["main", "v1", "refs/heads/main"])
     assert mirror.resolve("main") == second
     assert mirror.resolve("v1") == first
     assert mirror.resolve(first) == first
@@ -177,11 +177,11 @@ def test_refresh_is_throttled_and_picks_up_new_commits(published, remote, tmp_pa
     mirror.clone(remote)
     third = repo.commit("Add d", {"app.py": "a\nB\nc\nd\n"}, author=ALICE, when=SECOND)
     requests = len(server.authorizations)
-    assert mirror.refresh(remote) is False
+    assert mirror.refresh(remote, ["main"]) is False
     assert len(server.authorizations) == requests
     assert mirror.resolve(third) is None
     eager = GitMirror(mirror.path, fetch_interval=0)
-    assert eager.refresh(remote) is True
+    assert eager.refresh(remote, ["main"]) is True
     assert eager.resolve("main") == third
     assert eager.blame(third, "app.py", [4])[4].summary == "Add d"
 
@@ -228,7 +228,7 @@ def test_delete_removes_the_mirror_and_is_idempotent(published, remote, mirror):
     mirror.delete()
     mirror.delete()
     assert not mirror.exists()
-    assert mirror.refresh(remote, force=True) is False
+    assert mirror.refresh(remote, ["main"], force=True) is False
     assert mirror.clone(remote) is True
 
 
@@ -273,6 +273,93 @@ def test_a_stale_mirror_fetches_within_the_fetch_interval(published, remote, tmp
     mirror.clone(remote)
     third = repo.commit("Add d", {"app.py": "a\nB\nc\nd\n"}, author=ALICE, when=SECOND)
     mirror.mark_stale()
-    assert mirror.refresh(remote) is True
+    assert mirror.refresh(remote, ["main"]) is True
     assert mirror.resolve("main") == third
-    assert mirror.refresh(remote) is False
+    assert mirror.refresh(remote, ["main"]) is False
+
+
+def refs(mirror):
+    return set(git(mirror.path, "for-each-ref", "--format=%(refname)").splitlines())
+
+
+def has_object(mirror, sha):
+    return (
+        subprocess.run(
+            ["git", "--git-dir", str(mirror.path), "cat-file", "-e", sha], capture_output=True
+        ).returncode
+        == 0
+    )
+
+
+@pytest.fixture
+def branched(published):
+    repo, _server = published
+    main = repo.commits["Fix b"]
+    feature = repo.commit("Feature", {"feature.py": "x\n"}, author=ALICE, when=SECOND)
+    repo.branch("feature", feature)
+    repo.branch("main", main)
+    repo.tag("v1", repo.commits["Add app"], annotated=True)
+    repo.tag("v2", main)
+    return repo, main, feature
+
+
+@needs_git
+def test_the_mirror_holds_only_the_default_branch_and_the_names_blame_asked_for(
+    branched, remote, mirror
+):
+    repo, main, feature = branched
+    assert mirror.clone(remote, ["v1"])
+    assert refs(mirror) == {"refs/heads/main", "refs/tags/v1"}
+    assert not has_object(mirror, feature)
+    assert mirror.resolve("main") == main
+    assert mirror.resolve("v1") == repo.commits["Add app"]
+    assert mirror.refresh(remote, ["feature"], force=True)
+    assert refs(mirror) == {"refs/heads/main", "refs/tags/v1", "refs/heads/feature"}
+    assert mirror.resolve("feature") == feature
+    assert mirror.sync(remote, ["v2"], timeout=30)
+    assert refs(mirror) == {"refs/heads/main", "refs/tags/v2"}
+
+
+@needs_git
+def test_a_tracked_ref_follows_the_remote_and_disappears_with_it(branched, remote, mirror):
+    repo, main, _feature = branched
+    mirror.clone(remote, ["feature"])
+    moved = repo.commit("Feature 2", {"feature.py": "y\n"}, author=BOB, when=SECOND)
+    repo.branch("feature", moved)
+    repo.branch("main", main)
+    assert mirror.refresh(remote, ["main"], force=True)
+    assert mirror.resolve("feature") == moved
+    git(repo.served, "update-ref", "-d", "refs/heads/feature")
+    assert mirror.refresh(remote, ["main"], force=True)
+    assert refs(mirror) == {"refs/heads/main"}
+
+
+@needs_git
+def test_a_commit_named_by_sha_is_fetched_on_demand_and_kept(branched, remote, mirror):
+    repo, main, feature = branched
+    git(repo.served, "update-ref", "-d", "refs/heads/feature")
+    git(repo.served, "update-ref", "refs/keep/feature", feature)
+    mirror.clone(remote)
+    assert not mirror.has_commit(feature)
+    assert mirror.refresh(remote, [feature], force=True)
+    assert mirror.has_commit(feature)
+    assert mirror.blame(feature, "feature.py", [1])[1].summary == "Feature"
+    assert mirror.sync(remote, [feature], timeout=30)
+    assert refs(mirror) == {"refs/heads/main", f"refs/commits/{feature}"}
+    assert mirror.has_commit(main)
+
+
+@needs_git
+def test_fetches_never_run_gc_and_maintenance_does(published, remote, mirror):
+    repo, _server = published
+    mirror.clone(remote)
+    # Keep every fetch as a pack and ask for gc at the second pack, so a gc is observable.
+    git(mirror.path, "config", "fetch.unpackLimit", "1")
+    git(mirror.path, "config", "gc.autoPackLimit", "1")
+    for line in "de":
+        repo.commit(f"Add {line}", {"app.py": f"a\nB\nc\n{line}\n"}, author=ALICE, when=SECOND)
+        assert mirror.refresh(remote, ["main"], force=True)
+    packs = mirror.path / "objects" / "pack"
+    assert len(list(packs.glob("*.pack"))) == 2
+    mirror.maintain()
+    assert len(list(packs.glob("*.pack"))) == 1

@@ -431,11 +431,19 @@ repository:
    `<GITEA_BLAME_MIRROR_DIR>/<integration id>/<Gitea repository id>.git`. The Gitea repository ID
    survives renames. If the mirror does not exist yet, the
    `sentry_gitea.integration.mirror_repository` task clones it, and this blame skips the
-   repository. Adding a repository in Sentry queues the same task. Only selected repositories have
+   repository. The task keeps exactly Gitea's default branch (the remote `HEAD`) and the branch of
+   every code mapping (`master` when empty, as Sentry defaults it) of every live Sentry repository
+   sharing the mirror, deleting other refs. Fetches run with `gc.auto=0` and
+   `maintenance.auto=false`, so git never collects garbage inside a fetch's time limit; the task
+   runs `git gc --auto` after each clone or sync, within its own 25-minute limit. Adding a repository in Sentry queues the same task. Only selected repositories have
    Sentry repositories, so nothing else is cloned.
 2. **Revision.** A full commit SHA the mirror already has is used directly. Anything else (a branch
-   or tag name, or an unknown commit) fetches all branches and tags first, at most once every
-   5 minutes per mirror, then resolves the name. A push webhook for the repository lifts that limit
+   or tag name, or an unknown commit) fetches first, at most once every 5 minutes per mirror, then
+   resolves the name. The fetch asks Gitea (`git ls-remote`) for the branch and tag of each
+   requested name and of each ref the mirror already has, fetches those that exist with explicit
+   refspecs and `--no-tags`, and deletes local refs that Gitea no longer has. A commit SHA the
+   mirror lacks is fetched by SHA into `refs/commits/<sha>`; Gitea serves any reachable commit
+   that way over git's protocol v2. A push webhook for the repository lifts that limit
    for the next fetch, so an issue right after a push is not blamed on the branch's old head. An
    unknown revision skips its frames. Sentry 26.10 asks for the code mapping's branch
    (`default_branch`, or `master` when empty); release-based suspect commits never reach blame. A

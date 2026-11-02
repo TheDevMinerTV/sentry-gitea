@@ -6,7 +6,7 @@ import functools
 import logging
 import time
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -65,15 +65,17 @@ def remote_for(installation: Any, repo_id: int) -> Remote:
     return Remote(f"{client.base_url}/{current['full_name']}.git", client.access_token())
 
 
-def sync_mirror(installation: Any, repo: Any) -> None:
-    """Clone the mirror, or else fetch into it now, with a clone's time budget."""
+def sync_mirror(installation: Any, repo: Any, refs: Collection[str]) -> None:
+    """Clone the mirror, or else fetch into it now, with a clone's time budget, keeping only the
+    default branch and `refs`; then run the git maintenance that fetches never run."""
     repo_id = stable_repo_id(repo)
     if repo_id is None:
         return
     mirror = repository_mirror(installation.model.id, repo_id)
     remote = functools.partial(remote_for, installation, repo_id)
-    if not mirror.clone(remote):
-        mirror.refresh(remote, timeout=CLONE_TIMEOUT, force=True)
+    if not mirror.clone(remote, refs):
+        mirror.sync(remote, refs, timeout=CLONE_TIMEOUT)
+    mirror.maintain()
 
 
 def _queue_sync(repo: Any) -> None:
@@ -122,16 +124,16 @@ def _blame_repository(
     by_ref: dict[str, list[SourceLineInfo]] = defaultdict(list)
     for file in files:
         by_ref[file.ref].append(file)
+    unknown = [ref for ref in by_ref if not mirror.has_commit(ref)]
+    if unknown and time.monotonic() < deadline:
+        try:
+            mirror.refresh(lambda: remote_for(installation, repo_id), unknown)
+        except GitError:
+            _queue_sync(repo)  # A slow fetch gets the task's longer budget.
+            raise
     blamed: list[FileBlameInfo] = []
     for ref, ref_files in by_ref.items():
-        sha = ref if mirror.has_commit(ref) else None
-        if sha is None and time.monotonic() < deadline:
-            try:
-                mirror.refresh(lambda: remote_for(installation, repo_id))
-            except GitError:
-                _queue_sync(repo)  # A slow fetch gets the task's longer budget.
-                raise
-            sha = mirror.resolve(ref)
+        sha = mirror.resolve(ref)
         if sha is None:
             continue
         by_path: dict[str, list[SourceLineInfo]] = defaultdict(list)
