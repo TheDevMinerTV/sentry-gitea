@@ -143,6 +143,8 @@ def _blame_repository(
                 extra={"integration_id": installation.model.id, "repository_id": repo.id},
             )
             return
+    if mirror.needs_sync():
+        _queue_sync(repo)  # Meanwhile blame fetches only what it asks for.
     by_ref: dict[str, list[SourceLineInfo]] = defaultdict(list)
     for file in files:
         by_ref[file.ref].append(file)

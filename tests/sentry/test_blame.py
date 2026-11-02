@@ -36,7 +36,7 @@ from sentry_gitea.integration.blame import BLAME_BUDGET
 from sentry_gitea.integration.provider import GiteaIntegrationProvider
 from sentry_gitea.integration.repository import GiteaRepositoryProvider
 from sentry_gitea.integration.tasks import mirror_repository
-from sentry_gitea.mirror import FETCHED_STAMP, LOCK_TIMEOUT, mirror_path
+from sentry_gitea.mirror import FETCHED_STAMP, LOCK_TIMEOUT, SYNCED_STAMP, mirror_path
 
 TOKEN = "synthetic-integration-access"
 
@@ -465,3 +465,16 @@ class TestBlame(SyncFixture):
         mirror_repository(repository_id=self.repo.id)
         assert mirror_path(self.mirrors, self.integration.id, 41).is_dir()
         assert set(self.server.authorizations) == {f"Bearer {TOKEN}"}
+
+    @responses.activate
+    @blame_settings
+    def test_blame_on_a_mirror_from_an_earlier_version_queues_its_sync(self):
+        self.mock_lookup()
+        with self.tasks():
+            self.installation.get_blame_for_files([self.line(2)], extra={})
+        path = mirror_path(self.mirrors, self.integration.id, 41)
+        (path / SYNCED_STAMP).unlink()
+        with self.tasks():
+            blamed = self.installation.get_blame_for_files([self.line(2)], extra={})
+        assert [b.commit.commitId for b in blamed] == [self.source.commits["Fix b"]]
+        assert (path / SYNCED_STAMP).exists()

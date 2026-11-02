@@ -444,15 +444,19 @@ repository:
    or tag name, or an unknown commit) fetches first, at most once every 5 minutes per mirror, then
    resolves the name. The fetch asks Gitea (`git ls-remote`) for the branch and tag of each
    requested name and of each ref the mirror already has, fetches those that exist with explicit
-   refspecs and `--no-tags`, and deletes local refs that Gitea no longer has. A commit SHA the
+   refspecs and `--no-tags`, and deletes local refs that Gitea no longer has (before fetching, so
+   a deleted branch `x` cannot block a new `x/y`). A mirror cloned by an earlier version, with
+   every branch and tag, fetches only the requested names and queues the mirror task, which
+   prunes it once. A commit SHA the
    mirror lacks is fetched by SHA into `refs/commits/<sha>`; Gitea serves any reachable commit
    that way over git's protocol v2. A push webhook for the repository lifts that limit
    for the next fetch, so an issue right after a push is not blamed on the branch's old head. An
    unknown revision skips its frames. Sentry 26.10 asks for the code mapping's branch
    (`default_branch`, or `master` when empty); release-based suspect commits never reach blame. A
    name resolves to `refs/heads/<name>` first and `refs/tags/<name>` second, so a tag never hides
-   the branch of the same name. A full SHA is used as is. Other revision syntax, such as `main~1`
-   or an abbreviated SHA, does not resolve.
+   the branch of the same name. A full lowercase SHA is used as is. Other revision syntax does not
+   resolve: `main~1`, an abbreviated or uppercase SHA, or a fully qualified `refs/heads/main`
+   typed as a code mapping's branch.
 3. **Blame.** `git blame --line-porcelain` runs once per file, with one `-L n,n` per frame line.
    Author name and email, committer time and the commit summary become Sentry's `CommitInfo`.
    Missing files and lines past the end of a file are skipped.

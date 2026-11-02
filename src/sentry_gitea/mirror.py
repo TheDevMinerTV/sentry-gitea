@@ -29,6 +29,9 @@ FETCH_TIMEOUT = 30
 CLONE_TIMEOUT = 1500
 LOCK_TIMEOUT = 10
 FETCHED_STAMP = "sentry-gitea-fetched"
+# Written by the first sync that pruned the mirror to the refs blame reads. Mirrors from earlier
+# versions, which hold every branch and tag, lack it.
+SYNCED_STAMP = "sentry-gitea-synced"
 
 
 class GitError(Exception):
@@ -214,6 +217,10 @@ class GitMirror:
         except MirrorBusy:
             return False
 
+    def needs_sync(self) -> bool:
+        """Cloned by an earlier version, with every branch and tag, and never pruned since."""
+        return self.exists() and not (self.path / SYNCED_STAMP).exists()
+
     def mark_stale(self) -> None:
         """Make the next refresh fetch, however recent the last fetch was."""
         (self.path / FETCHED_STAMP).unlink(missing_ok=True)
@@ -304,9 +311,10 @@ class GitMirror:
         prune: bool,
     ) -> None:
         """Fetch only what blame reads: the remote's default branch, the branch and tag of each
-        name, the branches and tags the mirror already tracks (unless pruning) and commits named
-        by SHA that the mirror lacks. Refs the remote no longer has, or that pruning does not
-        keep, are deleted."""
+        name, the branches and tags the mirror already tracks (unless pruning, or before its
+        first sync) and commits named by SHA that the mirror lacks. Refs the remote no longer
+        has, or that pruning does not keep, are deleted first: a deleted `x` must not block a
+        new `x/y`."""
         network = self.deadline.within(timeout)
         local = self._local_refs(git_dir)
         shas = {name for name in names if _is_full_sha(name)}
@@ -316,22 +324,25 @@ class GitMirror:
             if _is_ref_name(name) and not _is_full_sha(name)
             for qualified in (f"refs/heads/{name}", f"refs/tags/{name}")
         }
-        tracked = requested if prune else requested | {r for r in local if _is_named_ref(r)}
+        tracking = not prune and (git_dir / SYNCED_STAMP).exists()
+        tracked = requested | {r for r in local if _is_named_ref(r)} if tracking else requested
         advertised, head = self._ls_remote(git_dir, remote, ["HEAD", *sorted(tracked)], network)
         wanted = {ref for ref in tracked if ref in advertised}
         if head is not None and "HEAD" in advertised:
             wanted.add(head)
         missing = sorted(sha for sha in shas if not self._has_object(git_dir, sha))
-        refspecs = [f"+{ref}:{ref}" for ref in sorted(wanted)]
-        refspecs += [f"+{sha}:refs/commits/{sha}" for sha in missing]
-        if refspecs:
-            self._fetch(git_dir, remote, refspecs, network)
         keep = wanted | {f"refs/commits/{sha}" for sha in shas}
         if prune:
             stale = local - keep
         else:
             stale = {ref for ref in tracked if ref in local and ref not in advertised}
         self._delete_refs(git_dir, stale)
+        refspecs = [f"+{ref}:{ref}" for ref in sorted(wanted)]
+        refspecs += [f"+{sha}:refs/commits/{sha}" for sha in missing]
+        if refspecs:
+            self._fetch(git_dir, remote, refspecs, network)
+        if prune:
+            (git_dir / SYNCED_STAMP).touch()
 
     def _ls_remote(
         self, git_dir: Path, remote: Remote, patterns: list[str], deadline: Deadline

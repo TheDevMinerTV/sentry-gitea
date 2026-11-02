@@ -9,6 +9,7 @@ from git_fixtures import ALICE, BOB, GIT_AVAILABLE, git, redirect_to, serve, sou
 
 from sentry_gitea import mirror as mirror_module
 from sentry_gitea.mirror import (
+    SYNCED_STAMP,
     BlameCommit,
     GitError,
     GitMirror,
@@ -363,3 +364,31 @@ def test_fetches_never_run_gc_and_maintenance_does(published, remote, mirror):
     assert len(list(packs.glob("*.pack"))) == 2
     mirror.maintain()
     assert len(list(packs.glob("*.pack"))) == 1
+
+
+@needs_git
+def test_a_branch_replaced_by_one_nested_under_its_name_is_fetched(branched, remote, mirror):
+    repo, main, feature = branched
+    mirror.clone(remote, ["feature"])
+    git(repo.served, "update-ref", "-d", "refs/heads/feature")
+    repo.branch("feature/v2", feature)
+    assert mirror.refresh(remote, ["feature/v2"], force=True)
+    assert mirror.resolve("feature/v2") == feature
+    assert refs(mirror) == {"refs/heads/main", "refs/heads/feature/v2"}
+
+
+@needs_git
+def test_a_mirror_from_an_earlier_version_fetches_only_what_blame_asks_until_synced(
+    branched, remote, mirror
+):
+    _repo, main, _feature = branched
+    mirror.clone(remote)
+    assert not mirror.needs_sync()
+    (mirror.path / SYNCED_STAMP).unlink()
+    git(mirror.path, "update-ref", "refs/heads/gone-upstream", main)
+    assert mirror.needs_sync()
+    assert mirror.refresh(remote, ["main"], force=True)
+    assert refs(mirror) == {"refs/heads/main", "refs/heads/gone-upstream"}
+    assert mirror.sync(remote, ["main"], timeout=30)
+    assert not mirror.needs_sync()
+    assert refs(mirror) == {"refs/heads/main"}
