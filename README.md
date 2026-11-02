@@ -295,7 +295,8 @@ How it behaves:
   the first blame after a push webhook for that repository.
 - **Credentials.** Git authenticates with the installation's OAuth token in an
   `Authorization: Bearer` header taken from the environment. The token is never written to the
-  mirror's configuration, and never appears in a process's arguments.
+  mirror's configuration, and never appears in a process's arguments. Git does not follow HTTP
+  redirects, so the header never reaches another host.
 - **Trade-off.** For a project with a Gitea code mapping, Sentry 26.10 then uses blame only and
   no longer falls back to release-based suspect commits. Sentry caches which providers an
   organization has for up to 4 hours, so turning the feature on or off takes effect within that

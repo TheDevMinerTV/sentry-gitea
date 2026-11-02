@@ -5,7 +5,7 @@ import time
 from datetime import UTC, datetime
 
 import pytest
-from git_fixtures import ALICE, BOB, GIT_AVAILABLE, serve, source_repo
+from git_fixtures import ALICE, BOB, GIT_AVAILABLE, redirect_to, serve, source_repo
 
 from sentry_gitea import mirror as mirror_module
 from sentry_gitea.mirror import (
@@ -212,6 +212,17 @@ def test_delete_removes_the_mirror_and_is_idempotent(published, remote, mirror):
     assert not mirror.exists()
     assert mirror.refresh(remote, force=True) is False
     assert mirror.clone(remote) is True
+
+
+@needs_git
+def test_the_token_is_never_sent_to_a_redirect_target(published, mirror):
+    _repo, target = published
+    with redirect_to(target.url) as redirecting:
+        with pytest.raises(GitError):
+            mirror.clone(lambda: Remote(redirecting.url + "/team/repo.git", TOKEN))
+    assert redirecting.authorizations == [f"Bearer {TOKEN}"]
+    assert target.authorizations == []
+    assert not mirror.exists()
 
 
 def test_deleting_a_mirror_that_was_never_cloned_creates_nothing(tmp_path, mirror):

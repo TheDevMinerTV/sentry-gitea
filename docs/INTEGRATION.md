@@ -449,7 +449,10 @@ Clones and fetches use `<GITEA_BASE_URL>/<owner>/<name>.git`, where `owner/name`
 repository ID through the API first. The installation's OAuth access token is refreshed if needed
 and passed as `http.extraHeader=Authorization: Bearer …` through git's `GIT_CONFIG_*` environment
 variables. It never appears in argv, in the mirror's `config` (which stores no remote at all), or
-in logs. Git runs with prompts, system and global configuration and hooks disabled. Timeouts kill
+in logs. Git runs with prompts, system and global configuration and hooks disabled, and with
+`http.followRedirects=false`: git would send the header to wherever Gitea redirects, so a redirect
+fails the clone or fetch instead. Gitea answers the URL built from the API's `full_name` without a
+redirect. Timeouts kill
 git and its helper processes: 10 seconds for a local command, 30 seconds for a fetch during blame,
 25 minutes for a clone. One blame request stops starting git commands after 45 seconds, inside
 Sentry's 90-second task deadline. A fetch that fails during blame queues the mirror task, which

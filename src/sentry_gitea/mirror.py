@@ -246,7 +246,16 @@ class GitMirror:
         remote: Remote | None = None,
         timeout: float = LOCAL_TIMEOUT,
     ) -> subprocess.CompletedProcess[str]:
-        argv = ["git", "-c", f"core.hooksPath={os.devnull}", "-c", "gc.autoDetach=false"]
+        argv = [
+            "git",
+            "-c",
+            f"core.hooksPath={os.devnull}",
+            "-c",
+            "gc.autoDetach=false",
+            # git sends http.extraHeader, the token, to wherever a redirect points.
+            "-c",
+            "http.followRedirects=false",
+        ]
         if git_dir is not None:
             argv += ["--git-dir", str(git_dir)]
         process = _spawn([*argv, *args], remote)

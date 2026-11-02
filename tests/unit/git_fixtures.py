@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ALICE = ("Alice Example", "alice@example.com")
@@ -89,6 +89,32 @@ def serve(directory: Path) -> Iterator[GitHttpServer]:
             pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(directory)))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield GitHttpServer(f"http://127.0.0.1:{server.server_port}", authorizations)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@contextmanager
+def redirect_to(target: str) -> Iterator[GitHttpServer]:
+    """Answers every request with a 301 to the same path on `target`."""
+    authorizations: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            authorizations.append(self.headers.get("Authorization", ""))
+            self.send_response(301)
+            self.send_header("Location", target + self.path)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
