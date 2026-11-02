@@ -326,7 +326,7 @@ class Browser:
         saw_callback = False
         response = self.request(
             "GET",
-            self.sentry_url + f"/organizations/{env.stack.sentry_org}/integrations/gitea/setup/",
+            self.sentry_url + f"/extensions/gitea/install/?organization={env.stack.sentry_org}",
         )
         for _ in range(30):
             if urlsplit(response.url).path == "/login/oauth/authorize":

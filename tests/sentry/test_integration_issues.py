@@ -109,8 +109,10 @@ class TestIntegrationIssues(IntegrationFixture):
             json=[gitea_comment(3, comment)],
             headers={"X-Total-Count": "1"},
         )
+        # Sentry 26.10 answers a repeated link with success and skips after_link_issue.
         retry = self.client.put(self.issue_endpoint(), data)
-        assert retry.status_code == 400
+        assert retry.status_code == 200
+        self.installation.after_link_issue(external, data=data)
         assert len([c for c in responses.calls if c.request.method == "POST"]) == 1
 
     @responses.activate

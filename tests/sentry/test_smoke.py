@@ -25,7 +25,8 @@ def test_provider_registered_from_settings_and_serializable() -> None:
     )
     assert data["key"] == "gitea"
     assert data["name"] == "Gitea"
-    assert data["canAdd"] is True
+    assert data["canAdd"] is False
+    assert data["metadata"]["aspects"]["externalInstall"]["url"] == "/extensions/gitea/install/"
     assert data["metadata"]["description"]
     assert data["metadata"]["source_url"] == PROJECT_URL
     assert data["metadata"]["issue_url"] == ISSUES_URL

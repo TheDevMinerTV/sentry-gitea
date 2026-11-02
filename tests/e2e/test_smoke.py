@@ -24,7 +24,8 @@ def test_integration_provider(e2e: E2EEnvironment) -> None:
     result = api.request("GET", f"/api/0/organizations/{e2e.sentry_org}/config/integrations/")
     provider = next(item for item in result["providers"] if item["key"] == "gitea")
     assert provider["name"] == "Gitea"
-    assert provider["canAdd"] is True
+    assert provider["canAdd"] is False
+    assert provider["metadata"]["aspects"]["externalInstall"]["url"] == "/extensions/gitea/install/"
 
 
 def test_public_extension_ping(e2e: E2EEnvironment) -> None:

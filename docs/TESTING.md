@@ -1,7 +1,7 @@
 # Testing sentry-gitea
 
-The tests target **Sentry 26.3.1** (Python 3.13 in its image) and **Gitea 28.1.0**. Sentry
-26.3.1 is FSL-1.1 licensed: it is used only as the runtime image and as a reference for
+The Sentry-level tests target **Sentry 26.10.0** (Python 3.13 in its image); the end-to-end
+suite last ran against **Sentry 26.3.1** and **Gitea 28.1.0**. Sentry 26.x is FSL-1.1 licensed: it is used only as the runtime image and as a reference for
 interfaces, and no code is copied from it. The autouse fixtures in `tests/sentry/conftest.py`
 are adapted from **Sentry 24.10.0** (Apache-2.0) and listed in [NOTICE](../NOTICE). The
 `fixtures` package and everything else in the test tree are original.
@@ -12,7 +12,7 @@ are adapted from **Sentry 24.10.0** (Apache-2.0) and listed in [NOTICE](../NOTIC
 | --- | --- | --- | --- |
 | Unit | `make unit` | Host. Pure `api/`, `render` and webhook code, HTTP mocked with `responses`. Never imports Sentry. | Yes |
 | Harness | `make harness-tests`, or `uv run pytest tests/e2e -m "not e2e"` for all of them | Host. Installer, bootstrap, browser and E2E helper logic, HTTP and Docker mocked. | Yes (all) |
-| Sentry-level | `make sentry-tests` | `ghcr.io/getsentry/sentry:26.3.1` with disposable Postgres and Redis, using Sentry's pytest plugin. No Snuba or Kafka. | Yes |
+| Sentry-level | `make sentry-tests` | `ghcr.io/getsentry/sentry:26.10.0` with disposable Postgres and Redis, using Sentry's pytest plugin. No Snuba or Kafka. | Yes |
 | End-to-end | see [End-to-end tests](#end-to-end-tests) | A real self-hosted Sentry 26.3.1 (errors-only) plus `gitea/gitea:28.1.0`. | No, local |
 
 `make lint` runs `ruff check .` and `ruff format --check .`; ruff also checks the Python code

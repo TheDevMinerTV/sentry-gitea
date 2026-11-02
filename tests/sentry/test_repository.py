@@ -239,7 +239,11 @@ class TestRepositoryDeletion(SyncFixture):
         assert repo.external_id != "41"  # renamed while pending deletion
         responses.get(API + "/repositories/41", json=WEBHOOK_REPO)
         responses.delete(HOOKS + "/4", status=204)
-        with self.tasks():
+        # Sentry 26.10 also tells Seer about the deletion; there is no Seer here.
+        with (
+            self.tasks(),
+            patch("sentry.deletions.defaults.repository.notify_seer_repository_deleted"),
+        ):
             run_scheduled_deletions()
         assert not Repository.objects.filter(id=repo.id).exists()
         # Sentry signals pending_delete on both deletion passes; removal is idempotent.

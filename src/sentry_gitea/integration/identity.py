@@ -64,7 +64,7 @@ class OAuthSettings:
 
 
 def setup_path() -> str:
-    return reverse("sentry-extension-setup", kwargs={"provider_id": "gitea"})
+    return reverse("sentry-gitea-setup")
 
 
 def log_failure(log: logging.Logger, prefix: str, error: Exception, **ids: Any) -> None:

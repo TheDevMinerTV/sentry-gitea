@@ -1,6 +1,6 @@
 # Organization integration
 
-This integration targets **self-hosted Sentry 26.3.1 in monolith mode** and **Gitea 28.1.0**.
+This integration targets **self-hosted Sentry 26.10.0 in monolith mode** and **Gitea 28.1.0**.
 It installs one Gitea owner namespace into a Sentry organization using OAuth, then supports
 creating, searching, linking and unlinking issues; opt-in issue synchronization (status,
 assignees, Sentry notes); repositories with a signed webhook, commits, pull requests and release
@@ -39,7 +39,7 @@ only select the authorizing user's own namespace.
 Install the package wheel into every Sentry web/worker image, following the
 [README](../README.md#install-self-hosted-sentry) and the
 [`enhance-image.sh`](../docker/enhance-image.sh) example. Sentry itself comes from
-`ghcr.io/getsentry/sentry:26.3.1`; do not install a separate Sentry Python dependency.
+`ghcr.io/getsentry/sentry:26.10.0`; do not install a separate Sentry Python dependency.
 Append the following to the self-hosted `sentry/sentry.conf.py`, retaining the other configured
 providers (the same lines are in [`sentry.conf.py.snippet`](../docker/sentry.conf.py.snippet)):
 
@@ -94,8 +94,14 @@ makes Gitea's own URLs use `ROOT_URL`. This integration builds its issue links f
 Gitea setting or the host in `html_url`. API requests and token grants continue to
 use `GITEA_BASE_URL`.
 
-In Sentry, open **Organization Settings → Integrations → Gitea**, choose Add/Install, authorize in
-Gitea, then select your namespace or an organization you own. The selection is verified again before
+In Sentry, open **Organization Settings → Integrations → Gitea** and choose **Install**. Sentry 26.10
+installs integrations through a dialog that only renders Sentry's built-in providers, and its generic
+pipeline no longer runs provider-defined steps. Gitea therefore sets `canAdd: false` and an
+`externalInstall` link to `/extensions/gitea/install/`, which runs the install pipeline itself and
+continues at `/extensions/gitea/setup/`, the OAuth redirect URI. The install page asks for a Sentry
+organization when you can install into more than one (`?organization=<slug>` skips the question).
+Authorize in Gitea, then select your namespace or an organization you own. The last page tells you
+to close it; reload the integration's page in Sentry to see the installation. The selection is verified again before
 Sentry saves it. Sentry's normal `org:integrations` permission is required for setup; install as an
 organization owner, not a Sentry superuser (see [Logs](#logs)).
 Missing settings leave Gitea visible in the integrations directory and produce a configuration error
@@ -382,7 +388,7 @@ Not supported:
   (rather than fetched through the code mapping) are validated by Sentry alone.
 - **Assignees:** team assignments are not synchronized; forward sync sets a single Gitea assignee.
 
-Sentry 26.3.1's prebuilt frontend has fixed provider-name/icon mappings. **The issue sidebar can show
+Sentry's prebuilt frontend has fixed provider-name/icon mappings. **The issue sidebar can show
 a blank provider name and a generic icon for Gitea.** The backend catalog and generic forms still use
 the registered provider. Python package installation cannot add a branded entry to those frontend
 mappings or to fixed source-code-management provider filters.

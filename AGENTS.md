@@ -1,9 +1,9 @@
 # sentry-gitea — instructions for coding agents
 
-Open-source (Apache-2.0) Gitea integration for **self-hosted Sentry 26.3.1**, targeting
+Open-source (Apache-2.0) Gitea integration for **self-hosted Sentry 26.10.0**, targeting
 **Gitea 28.1.0**. It is installed into the Sentry image with pip (self-hosted
 `sentry/enhance-image.sh`). Sentry is NOT a pip dependency: it is provided by the host image
-`ghcr.io/getsentry/sentry:26.3.1`. The package has two modes, the **plugins** and the
+`ghcr.io/getsentry/sentry:26.10.0`. The package has two modes, the **plugins** and the
 **integration**; use those names in code, docs and messages.
 
 Human contributors follow the same rules: see [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -11,7 +11,7 @@ Human contributors follow the same rules: see [CONTRIBUTING.md](CONTRIBUTING.md)
 ## Hard rules
 
 1. **Licensing (most important).** Sentry 26.x is FSL-1.1 (source-available, not open source).
-   - You may read Sentry 26.3.1's source to learn interfaces, base classes, method signatures and
+   - You may read Sentry 26.x's source to learn interfaces, base classes, method signatures and
      behavior. You must NOT copy or closely paraphrase code from it.
    - The only Sentry code you may adapt is from **Sentry 24.10.0, or a release you verified is
      already Apache-2.0** (FSL releases convert two years after publication). When you adapt

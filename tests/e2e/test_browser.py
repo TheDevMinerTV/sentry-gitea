@@ -76,7 +76,7 @@ def oauth_redirects(
         )
     )
     responses.get(
-        settings.stack.sentry_url + "/organizations/e2e/integrations/gitea/setup/",
+        settings.stack.sentry_url + "/extensions/gitea/install/?organization=e2e",
         status=302,
         headers={"Location": authorize},
     )
@@ -147,7 +147,7 @@ def test_recognizable_stale_pipeline_restarts_once_and_still_validates_oauth(
     settings, monkeypatch, stale
 ):
     browser = Browser(settings.stack.sentry_url, settings.stack.gitea_url)
-    setup = settings.stack.sentry_url + "/organizations/e2e/integrations/gitea/setup/"
+    setup = settings.stack.sentry_url + "/extensions/gitea/install/?organization=e2e"
     responses.get(setup, body=stale)
     resets = []
     monkeypatch.setattr(browser, "reset", lambda env: resets.append(True))
@@ -167,7 +167,7 @@ def test_recognizable_stale_pipeline_restarts_once_and_still_validates_oauth(
 def test_stale_pipeline_recurrence_fails_after_one_reset(settings, monkeypatch):
     browser = Browser(settings.stack.sentry_url, settings.stack.gitea_url)
     responses.get(
-        settings.stack.sentry_url + "/organizations/e2e/integrations/gitea/setup/", body=OWNER_FORM
+        settings.stack.sentry_url + "/extensions/gitea/install/?organization=e2e", body=OWNER_FORM
     )
     resets = []
     monkeypatch.setattr(browser, "reset", lambda env: resets.append(True))
@@ -237,7 +237,7 @@ def test_denial_then_restore_uses_a_new_authorization_state(settings, monkeypatc
     browser.owner_page(settings, deny=True)
     # Simulate the interrupted nested pipeline when the same session is reused.
     responses.get(
-        settings.stack.sentry_url + "/organizations/e2e/integrations/gitea/setup/", body=DENIAL
+        settings.stack.sentry_url + "/extensions/gitea/install/?organization=e2e", body=DENIAL
     )
     resets = []
     monkeypatch.setattr(browser, "reset", lambda env: resets.append(True))
@@ -417,7 +417,7 @@ def test_setup_login_redirect_has_specific_diagnostic(settings, rate_limited):
     browser = Browser(settings.stack.sentry_url, settings.stack.gitea_url)
     root = settings.stack.sentry_url
     responses.get(
-        root + "/organizations/e2e/integrations/gitea/setup/",
+        root + "/extensions/gitea/install/?organization=e2e",
         status=302,
         headers={"Location": "/auth/login/"},
     )
