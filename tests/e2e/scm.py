@@ -370,12 +370,12 @@ def deletion_script(repository_id: int) -> str:
     return "\n".join(
         [
             "from django.utils import timezone",
-            "from sentry.deletions.models.scheduleddeletion import RegionScheduledDeletion",
+            "from sentry.deletions.models.scheduleddeletion import CellScheduledDeletion",
             "from sentry.deletions.tasks.scheduled import run_deletion",
-            "due = RegionScheduledDeletion.objects.filter(",
+            "due = CellScheduledDeletion.objects.filter(",
             f"    model_name='Repository', object_id={repository_id:d}, in_progress=False,",
             "    date_scheduled__lte=timezone.now())",
-            "claimed = [row.id for row in due if RegionScheduledDeletion.objects.filter(",
+            "claimed = [row.id for row in due if CellScheduledDeletion.objects.filter(",
             "    id=row.id, in_progress=False).update(in_progress=True)]",
             "for deletion_id in claimed:",
             "    run_deletion(deletion_id=deletion_id)",

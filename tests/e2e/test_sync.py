@@ -367,7 +367,7 @@ def test_deletion_script_runs_only_the_due_repository_deletion(monkeypatch) -> N
         {
             "django.utils": {"timezone": SimpleNamespace(now=lambda: "now")},
             "sentry.deletions.models.scheduleddeletion": {
-                "RegionScheduledDeletion": SimpleNamespace(objects=Objects())
+                "CellScheduledDeletion": SimpleNamespace(objects=Objects())
             },
             "sentry.deletions.tasks.scheduled": {
                 "run_deletion": lambda **kwargs: ran.append(kwargs)

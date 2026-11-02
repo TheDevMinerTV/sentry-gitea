@@ -9,8 +9,8 @@ open them automatically when alert rules fire. An organization integration based
 owner-scoped install and search, issue sync, commit tracking, stack-trace links and CODEOWNERS.
 
 > **Status: alpha** (version `0.2.0`). The integration's Sentry-level tests run against **Sentry
-> 26.10.0**; the end-to-end suite last ran against **self-hosted Sentry 26.3.1** (errors-only profile)
-> and **Gitea 28.1.0**. Gitea forks such as Forgejo are untested. Expect breaking changes before 1.0.
+> 26.10.0**; the end-to-end suite last ran against **self-hosted Sentry 26.10.0** (errors-only profile)
+> and **Gitea 28.2.0**. Gitea forks such as Forgejo are untested. Expect breaking changes before 1.0.
 > It is not on PyPI yet.
 >
 > **Sentry 26.10 removed the legacy plugin API**, so the project plugins load only on Sentry 26.3.1 and
@@ -108,7 +108,7 @@ or both together. Their issue links are stored separately and are not migrated b
 ## Requirements
 
 - A [self-hosted Sentry](https://develop.sentry.dev/self-hosted/) **26.10.0** installation (Docker Compose).
-- **Gitea 28.1.0** with its built-in issue tracker enabled on the repositories you use.
+- **Gitea 28.2.0** with its built-in issue tracker enabled on the repositories you use.
 - Network paths: Sentry web **and** worker containers → Gitea API. For the integration, users' browsers
   → Gitea (OAuth), and Gitea → Sentry for repository webhooks.
 
@@ -427,9 +427,9 @@ make sentry-tests  # tests/sentry inside ghcr.io/getsentry/sentry:26.10.0 with t
 | Unit | `make unit` | Host. Pure `api/` and `render` code, with HTTP mocked by `responses` | Yes |
 | Harness | `uv run pytest tests/e2e -m "not e2e"` | Host. E2E helper and installer logic, no stack needed | Yes |
 | Sentry-level | `make sentry-tests` | The pinned Sentry image plus disposable Postgres 14 and Redis 6.2, using Sentry's pytest plugin. No Snuba/Kafka | Yes |
-| End-to-end | see below | A real self-hosted Sentry 26.3.1 (errors-only) plus `gitea/gitea:28.1.0` | No, local/manual |
+| End-to-end | see below | A real self-hosted Sentry 26.10.0 (errors-only) plus `gitea/gitea:28.2.0` | No, local/manual |
 
-E2E tests need a dedicated self-hosted Sentry 26.3.1 checkout. Do not use a production one: the
+E2E tests need a dedicated self-hosted Sentry 26.10.0 checkout. Do not use a production one: the
 installer edits marked blocks in that checkout's `enhance-image.sh` and `sentry.conf.py` and rebuilds its
 images. Put `SELF_HOSTED_DIR=/path/to/self-hosted` (and `DOCKER_CONFIG` if your Compose is too old) in
 the git-ignored `.e2e/local.env`, then run:

@@ -1,7 +1,7 @@
 # sentry-gitea — instructions for coding agents
 
 Open-source (Apache-2.0) Gitea integration for **self-hosted Sentry 26.10.0**, targeting
-**Gitea 28.1.0**. It is installed into the Sentry image with pip (self-hosted
+**Gitea 28.2.0**. It is installed into the Sentry image with pip (self-hosted
 `sentry/enhance-image.sh`). Sentry is NOT a pip dependency: it is provided by the host image
 `ghcr.io/getsentry/sentry:26.10.0`. The package has two modes, the **plugins** and the
 **integration**; use those names in code, docs and messages.
@@ -39,7 +39,7 @@ src/sentry_gitea/
   urls.py            ROOT_URLCONF shim: our /extensions/gitea/ routes + include("sentry.conf.urls")
 tests/unit/          pure tests, run on the host; must not import sentry
 tests/sentry/        run inside the Sentry image with Postgres + Redis (sentry.testutils, responses)
-tests/e2e/           real self-hosted Sentry (errors-only profile) + gitea/gitea:28.1.0
+tests/e2e/           real self-hosted Sentry (errors-only profile) + gitea/gitea:28.2.0
 fixtures/            our own stub package (sentry.testutils adds "fixtures" to INSTALLED_APPS)
 docker/              enhance-image.sh, sentry.conf.py snippet, compose files, E2E harness
 ```

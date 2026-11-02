@@ -19,6 +19,9 @@ from redaction import Credential
 
 SCOPES = "read:user read:organization write:issue write:repository"
 CALLBACK = "/extensions/gitea/setup/"
+LOGIN_API = "/api/0/auth/login/"
+# Sentry names its CSRF cookie "sc", not Django's default "csrftoken".
+SENTRY_CSRF_COOKIE = "sc"
 REDIRECTS = (301, 302, 303, 307, 308)
 SENTRY_LOGIN_LIMIT_ERRORS = (
     "You have made too many login attempts. Please try again later.",
@@ -195,7 +198,9 @@ class Browser:
             self.response_credentials,
             where=f"response {method} {path} HTTP {response.status_code}",
         )
-        if host == origin(self.sentry_url) and path.startswith("/auth/login/"):
+        if host == origin(self.sentry_url) and (
+            path.startswith("/auth/login/") or path == LOGIN_API
+        ):
             page = Page(response.url, response.text)
             check(
                 response.status_code != 429
@@ -232,27 +237,43 @@ class Browser:
         return self.request("POST", url, data=form.fields | values, headers=headers)
 
     def login_sentry(self, env: IntegrationEnvironment) -> None:
+        """Log in like Sentry 26.10's React login page: JSON to the login API, CSRF from cookie."""
         self.response_credentials = env.credentials
         self.private_credentials.update(env.credentials)
-        response = self.follow(self.request("GET", self.sentry_url + "/auth/login/"))
-        page = Page(response.url, response.text)
-        form = page.form("username")
-        check(bool(form.fields.get("csrfmiddlewaretoken")), "Sentry login has no CSRF token")
-        check(form.fields.get("op") == "login", "Sentry login operation is missing")
-        response = self.follow(
-            self.submit(
-                page,
-                form,
-                {"username": env.sentry_owner_username, "password": env.sentry_owner_password},
-            )
+        self.follow(self.request("GET", self.sentry_url + "/auth/login/"))
+        # The page's auth-config call opens the session that carries Django's test cookie.
+        self.request("GET", self.sentry_url + "/api/0/auth/config/", expected=(200,))
+        csrf = self.sentry.cookies.get(SENTRY_CSRF_COOKIE)
+        check(bool(csrf), "Sentry login set no CSRF cookie")
+        response = self.request(
+            "POST",
+            self.sentry_url + LOGIN_API,
+            expected=(200,),
+            json={"username": env.sentry_owner_username, "password": env.sentry_owner_password},
+            headers={
+                "X-CSRFToken": csrf,
+                "Origin": origin(self.sentry_url),
+                "Referer": origin(self.sentry_url) + "/",
+                "Sec-Fetch-Site": "same-origin",
+            },
         )
-        check(urlsplit(response.url).path != "/auth/login/", "Sentry browser login failed")
+        try:
+            signed_in = bool(response.json().get("user"))
+        except ValueError:
+            signed_in = False
+        check(signed_in, "Sentry browser login failed")
         self.sentry_logged_in = True
         self.verify_sentry_owner(env)
 
+    def _authenticated_me(self) -> requests.Response | None:
+        response = self.request("GET", self.sentry_url + "/api/0/users/me/", expected=(200, 401))
+        return response if response.status_code == 200 else None
+
     def verify_sentry_owner(self, env: IntegrationEnvironment) -> None:
         """Check the cookie-authenticated identity before sending any OAuth callbacks."""
-        response = self.request("GET", self.sentry_url + "/api/0/users/me/", expected=(200,))
+        # Right after a logout elsewhere, Sentry 26.10 can answer a fresh session's first
+        # requests with 401 for a few seconds.
+        response = poll("Sentry accepted the new session", self._authenticated_me, seconds=30)
         try:
             user = response.json()
         except ValueError:

@@ -700,8 +700,9 @@ class TestIntegration:
         assert comments[0]["body"].count(marker) == 1
         assert data["comment"] in comments[0]["body"]
         flow.assert_external_issue(integration, group, repo, issue)
-        duplicate = flow.sentry.request("PUT", path, expected=(400,), json=data)
-        assert duplicate == {"non_field_errors": ["That issue is already linked"]}
+        # Sentry 26.10 answers a repeated link of the same issue with 200 instead of 400.
+        duplicate = flow.sentry.request("PUT", path, expected=(200,), json=data)
+        assert (duplicate["id"], duplicate["key"]) == (linked["id"], linked["key"])
         assert flow.gitea.request("GET", comments_path) == comments
         flow.sentry.request("DELETE", path, expected=(204,), params={"externalIssue": linked["id"]})
         assert not any(row["key"] == linked["key"] for row in flow.links(integration, group))

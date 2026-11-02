@@ -1,7 +1,7 @@
 # Testing sentry-gitea
 
 The Sentry-level tests target **Sentry 26.10.0** (Python 3.13 in its image); the end-to-end
-suite last ran against **Sentry 26.3.1** and **Gitea 28.1.0**. Sentry 26.x is FSL-1.1 licensed: it is used only as the runtime image and as a reference for
+suite last ran against **Sentry 26.10.0** and **Gitea 28.2.0**. Sentry 26.x is FSL-1.1 licensed: it is used only as the runtime image and as a reference for
 interfaces, and no code is copied from it. The autouse fixtures in `tests/sentry/conftest.py`
 are adapted from **Sentry 24.10.0** (Apache-2.0) and listed in [NOTICE](../NOTICE). The
 `fixtures` package and everything else in the test tree are original.
@@ -13,7 +13,7 @@ are adapted from **Sentry 24.10.0** (Apache-2.0) and listed in [NOTICE](../NOTIC
 | Unit | `make unit` | Host. Pure `api/`, `render` and webhook code, HTTP mocked with `responses`. Never imports Sentry. | Yes |
 | Harness | `make harness-tests`, or `uv run pytest tests/e2e -m "not e2e"` for all of them | Host. Installer, bootstrap, browser and E2E helper logic, HTTP and Docker mocked. | Yes (all) |
 | Sentry-level | `make sentry-tests` | `ghcr.io/getsentry/sentry:26.10.0` with disposable Postgres and Redis, using Sentry's pytest plugin. No Snuba or Kafka. | Yes |
-| End-to-end | see [End-to-end tests](#end-to-end-tests) | A real self-hosted Sentry 26.3.1 (errors-only) plus `gitea/gitea:28.1.0`. | No, local |
+| End-to-end | see [End-to-end tests](#end-to-end-tests) | A real self-hosted Sentry 26.10.0 (errors-only) plus `gitea/gitea:28.2.0`. | No, local |
 
 `make lint` runs `ruff check .` and `ruff format --check .`; ruff also checks the Python code
 blocks in Markdown files. E2E HTTP clients and CLI failures never print credential values or
@@ -35,7 +35,7 @@ The Makefile reads an optional, git-ignored `.e2e/local.env` in **GNU make assig
 (no `export`, no quotes around ordinary paths):
 
 ```make
-SELF_HOSTED_DIR=/path/to/self-hosted-26.3.1
+SELF_HOSTED_DIR=/path/to/self-hosted-26.10.0
 DOCKER_CONFIG=/path/to/docker-config-with-new-compose
 GITEA_HTTP_PORT=13000
 SENTRY_TEST_WORKERS=2
@@ -109,7 +109,7 @@ docker compose -p sentry-gitea-tests -f docker/test-sentry.compose.yml down
 
 | Variable | Default / purpose |
 | --- | --- |
-| `SELF_HOSTED_DIR` | `../self-hosted-26.3.1` next to this repository; the self-hosted checkout. |
+| `SELF_HOSTED_DIR` | `../self-hosted-26.10.0` next to this repository; the self-hosted checkout. |
 | `DOCKER_CONFIG` | Inherited unchanged; Docker credentials and plugin directory. |
 | `COMPOSE_PROFILES` | Self-hosted `.env`, then `.env.custom`; an exported value wins. Use `errors-only`. |
 | `SELF_HOSTED_NETWORK` | Derived from the self-hosted Compose config, normally `sentry-self-hosted_default`. |
@@ -143,7 +143,7 @@ other overrides first. A single suite runs with, for example,
 `.venv/bin/pytest tests/e2e/test_sync.py -m e2e -v -rs`. Rerun `make e2e-install` after every code
 change, even when the version is unchanged, and rerun `make e2e-bootstrap` after harness changes.
 
-**`make e2e-gitea-up`** starts `gitea/gitea:28.1.0` (SQLite, a named volume, no SSH) on Sentry's
+**`make e2e-gitea-up`** starts `gitea/gitea:28.2.0` (SQLite, a named volume, no SSH) on Sentry's
 Docker network under the aliases `gitea` and `gitea-unlisted`, published on
 `127.0.0.1:${GITEA_HTTP_PORT}`. `ROOT_URL` is that browser URL, so Gitea's own links point at it,
 while Sentry uses `http://gitea:3000`. Gitea's `[security] ALLOWED_HOST_LIST` is set to exactly
@@ -194,8 +194,8 @@ restarts nginx. It prints `Extension installed` on success.
 
 | File | Cases | Covers |
 | --- | --- | --- |
-| `tests/e2e/test_smoke.py` | 6 | Sentry organization API; both plugins listed; the Gitea provider listed with `canAdd: true`; the unauthenticated ping returns the package version; the Gitea API and fixture repository; the Sentry web container reaches `http://gitea:3000`. |
-| `tests/e2e/test_plugins.py` | 9 | Configuration validation and token redaction; base URLs outside the allowlist (`http://gitea-unlisted:3000` and `http://169.254.169.254`) are refused, and changing the base URL without re-entering the token fails; an issue opened by another Gitea user with a valid metadata marker is not recovered (a new issue is filed and the planted one is untouched); sidebar create; link with backlink and unlink; alert filing and repeat comments through both the specific `gitea_alerts` action and the all-legacy action; closed issues are skipped; a Gitea outage is logged as `sentry-gitea: alert delivery failed` without credentials. Stored links must use the public Gitea URL. |
+| `tests/e2e/test_smoke.py` | 6 | Sentry organization API; both plugins listed (skipped on Sentry 26.10, which removed the legacy plugin API); the Gitea provider listed with `canAdd: false` and its `externalInstall` link; the unauthenticated ping returns the package version; the Gitea API and fixture repository; the Sentry web container reaches `http://gitea:3000`. |
+| `tests/e2e/test_plugins.py` | 10 | Skipped on Sentry 26.10, which removed the legacy plugin API. Configuration validation and token redaction; base URLs outside the allowlist (`http://gitea-unlisted:3000` and `http://169.254.169.254`) are refused, and changing the base URL without re-entering the token fails; an issue opened by another Gitea user with a valid metadata marker is not recovered (a new issue is filed and the planted one is untouched); sidebar create; link with backlink and unlink; alert filing and repeat comments through both the specific `gitea_alerts` action and the all-legacy action; closed issues are skipped; a Gitea outage is logged as `sentry-gitea: alert delivery failed` without credentials. Stored links must use the public Gitea URL. |
 | `tests/e2e/test_integration.py` | 9 | OAuth denial with a redacted web log; personal install and owner choices; organization install and reinstall (same integration ID and `externalId`); repository and issue search for both owner kinds, excluding pull requests; create with labels, assignee and the remembered default repository; link, repeated link and unlink; access-token expiry and refresh through real OAuth endpoints; an issue carrying a valid marker but written by another Gitea user is not recovered (a new issue is filed, and a retried create reports the existing link). |
 | `tests/e2e/test_sync.py` | 11 | Repository add, re-add and delete with exactly one hook at `.../webhook/<integration id>/<repository id>/`; webhook authentication (signatures, unknown integration, malformed payload, unknown repository); a delivery signed with one repository's secret is refused for any other repository (400 when the payload names another repository, 401 at another repository's URL); a 7-commit push truncated to 5 and backfilled, with Gitea's redelivery changing nothing; release commit ranges; status, comment and assignee sync; stack-trace links; email-only CODEOWNERS and rejection of `@handles`; a hook left at the old URL format is replaced when the repository is re-added, and Gitea's own Test Delivery then succeeds. |
 
@@ -222,7 +222,10 @@ options, code mappings and Sentry repositories are restored or deleted.
   filtered to `sentry-gitea:` lines, and raw logs are never printed.
 - **Browser.** OAuth flows use `requests` and Python's HTML parser, not Selenium or JavaScript.
   Every redirect is followed manually with an origin check, form posts send an origin-only
-  `Referer`, and Sentry and Gitea use separate cookie jars. Gitea 28.1.0 has no hidden `_csrf`
+  `Referer`, and Sentry and Gitea use separate cookie jars. Sentry 26.10 renders its login form in
+  React, so the harness logs in like that page does: it loads `/auth/login/` and
+  `/api/0/auth/config/` (which opens the session holding Django's test cookie), then posts JSON to
+  `/api/0/auth/login/` with the `sc` CSRF cookie as `X-CSRFToken`. Gitea 28 has no hidden `_csrf`
   form fields; it relies on Go's cross-origin protection, so form posts send a same-origin
   `Origin` and `Sec-Fetch-Site: same-origin`. This verifies HTTP behavior, not the compiled
   frontend's React views or icons.

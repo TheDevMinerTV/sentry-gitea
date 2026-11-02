@@ -106,7 +106,7 @@ def run(
 
 def self_hosted_dir() -> Path:
     return Path(
-        os.environ.get("SELF_HOSTED_DIR", str(ROOT.parent / "self-hosted-26.3.1"))
+        os.environ.get("SELF_HOSTED_DIR", str(ROOT.parent / "self-hosted-26.10.0"))
     ).resolve()
 
 
