@@ -3,7 +3,9 @@ import hashlib
 import pytest
 
 from sentry_gitea.integration.selection import (
+    PickedRepositories,
     RepositoryChoice,
+    initially_ticked,
     is_selected,
     parse_repository_ids,
     repository_choices,
@@ -84,6 +86,49 @@ def test_repository_selection_is_sorted_unique_ids_and_missing_means_all():
 def test_invalid_repository_selections_are_rejected(value):
     with pytest.raises(ValueError):
         parse_repository_ids(value)
+
+
+def picked(offered, ticked, reinstall=True):
+    return PickedRepositories(frozenset(offered), frozenset(ticked), reinstall)
+
+
+@pytest.mark.parametrize(
+    ("submit", "stored", "imported", "expected"),
+    [
+        (picked([41, 43], [43], reinstall=False), frozenset({41, 50}), {41, 50}, {43}),
+        (picked([41, 43], [], reinstall=False), None, {41}, set()),
+        (picked([41, 43], [41]), frozenset({41, 50}), {41, 50}, {41, 50}),
+        (picked([41, 43], [41, 43]), frozenset({41, 50}), {41, 50}, {41, 43, 50}),
+        (picked([41, 43], []), frozenset({41, 50}), {41, 50}, {50}),
+        (picked([], []), frozenset({41, 50}), {41, 50}, {41, 50}),
+        (picked([41, 43], [41, 43]), None, {41, 50}, None),
+        (picked([41, 43], [41]), None, {41, 43, 50}, {41, 50}),
+    ],
+)
+def test_a_reinstall_changes_only_the_repositories_its_picker_offered(
+    submit, stored, imported, expected
+):
+    assert submit.applied_to(stored, imported) == expected
+
+
+def test_the_install_picker_ticks_the_selection_of_a_reinstall_only():
+    assert initially_ticked(False, None, [41, 43]) == frozenset()
+    assert initially_ticked(True, None, [41, 43]) == {41, 43}
+    assert initially_ticked(True, frozenset({41, 50}), [41, 43]) == {41}
+    assert initially_ticked(True, frozenset(), [41, 43]) == frozenset()
+
+
+def test_picked_repositories_survive_the_pipeline_state_and_reject_tampering():
+    submit = picked([41, 43], [41])
+    assert PickedRepositories.from_state(submit.to_state()) == submit
+    for state in (
+        [41],
+        {"offered": [41], "ticked": [41]},
+        {"offered": [41], "ticked": [43], "reinstall": True},
+        {"offered": [41], "ticked": [41], "reinstall": "yes"},
+    ):
+        with pytest.raises(ValueError):
+            PickedRepositories.from_state(state)
 
 
 def test_repository_choices_keep_only_administered_repositories_of_the_owner():

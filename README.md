@@ -239,7 +239,8 @@ Details, label colors, recovery semantics and logging: [docs/PLUGINS.md](docs/PL
    - **Repositories:** Sentry 26.10 has no Add Repository form. Its repository sync imports the
      installed owner's **selected** repositories that the authorizing user administers. The install
      picker stores the selection; change it later in the integration's settings under
-     **Repositories**. Saving it starts a sync. Installations made before the picker existed have no
+     **Repositories**. Saving it starts a sync. A reinstall shows the picker with the current
+     selection ticked and removes only the repositories you untick there. Installations made before the picker existed have no
      stored selection and import every repository, as before. To sync again, go to
      **Organization Settings → Repositories**, hover the Gitea owner's repository count and click
      **Sync now**, or wait for Sentry's daily sync. Removing a repository from the selection deletes

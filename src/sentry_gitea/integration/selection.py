@@ -86,3 +86,54 @@ def is_selected(selection: Selection, repo_id: Any) -> bool:
         return True
     value = str(repo_id)
     return value.isascii() and value.isdigit() and int(value) in selection
+
+
+@dataclass(frozen=True)
+class PickedRepositories:
+    """One submit of the install picker: the repositories it offered, those ticked, and whether
+    the owner was already installed in the organization."""
+
+    offered: frozenset[int]
+    ticked: frozenset[int]
+    reinstall: bool
+
+    @classmethod
+    def from_state(cls, value: Any) -> PickedRepositories:
+        if not isinstance(value, dict) or type(value.get("reinstall")) is not bool:
+            raise ValueError("Select repositories from the list.")
+        offered = frozenset(parse_repository_ids(value.get("offered")))
+        ticked = frozenset(parse_repository_ids(value.get("ticked")))
+        if not ticked <= offered:
+            raise ValueError("Select repositories from the list.")
+        return cls(offered, ticked, value["reinstall"])
+
+    def to_state(self) -> dict[str, Any]:
+        return {
+            "offered": sorted(self.offered),
+            "ticked": sorted(self.ticked),
+            "reinstall": self.reinstall,
+        }
+
+    def applied_to(self, stored: Selection, imported: Iterable[int]) -> Selection:
+        """The selection after this submit, given the stored one and the imported repositories.
+
+        A reinstall only changes repositories the picker offered: one the reinstalling user does
+        not administer was never shown, so it was not unticked either.
+        """
+        if not self.reinstall:
+            return self.ticked
+        unticked = self.offered - self.ticked
+        if stored is None:
+            if not unticked:
+                return None
+            # "Every repository" has no list to remove from; keeping the imported ones deletes
+            # only what was unticked.
+            stored = frozenset(imported) | self.offered
+        return (stored - unticked) | self.ticked
+
+
+def initially_ticked(reinstall: bool, stored: Selection, offered: Iterable[int]) -> frozenset[int]:
+    """What the install picker ticks before the user changes anything."""
+    if not reinstall:
+        return frozenset()
+    return frozenset(offered) if stored is None else stored & frozenset(offered)

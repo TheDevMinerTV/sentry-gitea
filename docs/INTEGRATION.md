@@ -115,7 +115,8 @@ for the organization to use issue actions.
 
 The installation is identified by SHA-256 of `v1|<normalized base URL>|<user or org>|<owner numeric ID>`.
 Renaming an owner does not change its installation identity. Reinstalling the same owner rotates the
-stored OAuth identity and preserves the integration's webhook key.
+stored OAuth identity and preserves the integration's webhook key and its repository selection (see
+[Reinstalling](#reinstalling)).
 
 To upgrade or remove the integration, follow [Upgrade](../README.md#upgrade) and
 [Uninstall](../README.md#uninstall) in the README. Delete the repositories in Sentry before
@@ -144,7 +145,8 @@ Gitea issues access tokens that expire after one hour by default
   installation unused for longer than the refresh-token lifetime must be reinstalled. Keep that
   lifetime well above 7 days.
 - If the refresh token has expired or was revoked, operations fail with an error asking you to
-  reinstall. Reinstalling the same owner keeps the integration, its links and its webhook key.
+  reinstall. Reinstalling the same owner keeps the integration, its links, its webhook key and
+  its repository selection.
 - Leave `[oauth2] INVALIDATE_REFRESH_TOKENS` at its default `false`. With `true`, installations
   authorized by the same Gitea user share one grant, and each refresh invalidates the refresh
   tokens of the others.
@@ -250,7 +252,7 @@ without Gitea's built-in issue tracker can be added; they are only hidden from i
 
 The organization configuration key `repository_ids` holds the selection: a sorted list of at most
 1,000 numeric Gitea repository IDs. IDs, unlike `owner/name`, survive renames and transfers. The
-install picker always stores a list, possibly empty. The integration's settings page shows it as the
+first install always stores a list, possibly empty. The integration's settings page shows it as the
 **Repositories** multi-select, a Sentry `select` field with `multiple: true` whose choices are the
 owner's repositories the authorizing user administers. The API takes the same list:
 `POST /api/0/organizations/<org>/integrations/<integration id>/` with
@@ -274,6 +276,28 @@ a new row with a new hook at once, even before the old row's deletion runs.
 
 The selection does not limit issue forms: any repository of the installed owner can still be used to
 create and link issues.
+
+#### Reinstalling
+
+Sentry runs the whole install again for a reinstall, the documented recovery for an expired refresh
+token, so the picker appears again. For an owner already installed in the organization, the picker
+ticks the stored selection, or every listed repository for an installation without a stored
+selection, and the submit changes only what you change on that page:
+
+- A repository you untick is removed from the selection and its Sentry repository is deleted, as in
+  the settings.
+- A repository you tick is added.
+- A selected repository the picker does not list, because the reinstalling user does not administer
+  it, stays selected.
+- An installation without a stored selection keeps having none if you untick nothing. If you untick
+  a repository, it gets a stored selection: the repositories already imported into Sentry and
+  those still ticked, without the unticked ones. Repositories of the owner that were neither
+  imported nor listed are then no longer imported.
+
+A reinstall may change the selection because the page is the same picker as at install time and
+its ticks show the result, but a repository leaves the selection only when you untick it there.
+The first install of an owner in an organization starts with nothing ticked and stores exactly what
+you tick.
 
 Adding a repository creates exactly one Gitea repository hook: type `gitea`, JSON, active, all
 branches, for the events `push`, `issues_only`, `issue_assign` and `pull_request`, delivered to

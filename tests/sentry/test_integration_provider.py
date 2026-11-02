@@ -11,11 +11,13 @@ from django.http import HttpResponse
 from django.test import RequestFactory, override_settings
 from sentry import identity
 from sentry.api.serializers import serialize
+from sentry.constants import ObjectStatus
 from sentry.integrations.api.serializers.models.integration import IntegrationProviderSerializer
 from sentry.integrations.base import IntegrationFeatures
 from sentry.integrations.manager import default_manager
 from sentry.integrations.models.integration import Integration
 from sentry.integrations.models.organization_integration import OrganizationIntegration
+from sentry.models.repository import Repository
 from sentry.shared_integrations.exceptions import IntegrationError
 from sentry.testutils.cases import APITestCase, IntegrationTestCase
 from sentry.testutils.silo import no_silo_test
@@ -182,10 +184,10 @@ class TestIntegrationProvider(IntegrationFixture):
         state = {
             "identity": {"tokens": TOKENS, "scopes": list(OAUTH_SCOPES)},
             "owner": "org:8",
-            "repository_ids": [41],
+            "repository_ids": {"offered": [41, 43], "ticked": [41], "reinstall": True},
         }
         result = GiteaIntegrationProvider().build_integration(state)
-        assert result["post_install_data"] == {"repository_ids": [41]}
+        assert result["post_install_data"] == {"repository_ids": state["repository_ids"]}
         assert result["external_id"] == self.integration.external_id
         assert result["idp_external_id"] == result["external_id"]
         assert result["name"] == "team"
@@ -202,7 +204,7 @@ class TestIntegrationProvider(IntegrationFixture):
             {
                 "identity": {"tokens": TOKENS, "scopes": list(OAUTH_SCOPES)},
                 "owner": "user:2",
-                "repository_ids": [],
+                "repository_ids": {"offered": [], "ticked": [], "reinstall": False},
             }
         )
         assert result["external_id"] == hashlib.sha256(f"v1|{BASE}|user|2".encode()).hexdigest()
@@ -270,10 +272,12 @@ class TestIntegrationProvider(IntegrationFixture):
         assert response.status_code == 403
         assert not responses.calls
 
-    def picker(self):
-        return FakePipeline(
+    def picker(self, organization=None):
+        pipeline = FakePipeline(
             {"identity": {"tokens": TOKENS, "scopes": list(OAUTH_SCOPES)}, "owner": "org:8"}
         )
+        pipeline.organization = organization or self.create_organization(owner=self.user)
+        return pipeline
 
     def mock_owner_repositories(self):
         administered = {**REPO, "permissions": {"admin": True}}
@@ -321,7 +325,37 @@ class TestIntegrationProvider(IntegrationFixture):
         assert b'name="repository" value="41"' in response.content, "the owner POST renders it"
         assert not pipeline.advanced
         submit(pipeline, {"step": "repositories", "repository": ["41"]})
-        assert pipeline.advanced and pipeline.data["repository_ids"] == [41]
+        assert pipeline.advanced
+        assert pipeline.data["repository_ids"] == {
+            "offered": [41],
+            "ticked": [41],
+            "reinstall": False,
+        }
+
+    @responses.activate
+    def test_repository_form_ticks_the_stored_selection_of_a_reinstall(self):
+        administered = {**REPO, "permissions": {"admin": True}}
+        other = {**administered, "id": 43, "full_name": "team/other"}
+        responses.get(
+            API + "/repos/search",
+            json={"data": [administered, other]},
+            headers={"X-Total-Count": "2"},
+        )
+
+        def ticked(organization):
+            response = RepositorySelectionView().dispatch(
+                RequestFactory().get("/extensions/gitea/setup/"), self.picker(organization)
+            )
+            page = response.content.decode()
+            assert ("already installed" in page) == (organization == self.organization)
+            return re.findall(r'name="repository" value="(\d+)" checked', page)
+
+        assert ticked(self.create_organization(owner=self.user)) == [], "a new install"
+        assert ticked(self.organization) == ["43", "41"], "no stored selection means all"
+        self.org_integration.update(config={"repository_ids": [41, 99]})
+        assert ticked(self.organization) == ["41"]
+        self.org_integration.update(config={"repository_ids": []})
+        assert ticked(self.organization) == []
 
     @responses.activate
     def test_repository_form_answers_other_methods_with_405_and_requires_csrf(self):
@@ -458,6 +492,85 @@ class TestGiteaInstallPipeline(IntegrationTestCase):
         # The finished session cannot replay the code exchange.
         self.client.get(self.setup_path, {"state": query["state"][0], "code": "private-code"})
         assert len([call for call in responses.calls if call.request.method == "POST"]) == 1
+
+    def install(self, choose):
+        start = self.client.get(INSTALL_PATH, {"organization": self.organization.slug})
+        state = parse_qs(urlsplit(start["Location"]).query)["state"][0]
+        form = self.client.get(self.setup_path, {"state": state, "code": "private-code"})
+        csrf = re.search(r'name="csrfmiddlewaretoken"\s+value="([^"]+)"', form.content.decode())[1]
+        picker = self.client.post(self.setup_path, {"owner": "user:2", "csrfmiddlewaretoken": csrf})
+        page = picker.content.decode()
+        with patch(
+            "sentry.integrations.source_code_management.sync_repos.sync_repos_for_org.apply_async"
+        ):
+            finish = self.client.post(
+                self.setup_path,
+                {"step": "repositories", "repository": choose(page), "csrfmiddlewaretoken": csrf},
+            )
+        self.assertDialogSuccess(finish)
+        return page
+
+    @responses.activate
+    def test_a_reinstall_keeps_the_selection_unless_the_user_unticks_a_repository(self):
+        responses.post(
+            BASE + "/login/oauth/access_token",
+            json={"access_token": TOKEN, "refresh_token": REFRESH, "expires_in": 3600},
+        )
+        responses.get(API + "/user", json=USER)
+        responses.get(API + "/user/orgs", json=[])
+        personal = {**REPO, "owner": {"id": 2, "login": "alice"}, "permissions": {"admin": True}}
+        responses.get(
+            API + "/repos/search",
+            json={
+                "data": [
+                    {**personal, "full_name": "alice/repo"},
+                    {**personal, "id": 43, "full_name": "alice/other"},
+                ]
+            },
+            headers={"X-Total-Count": "2"},
+        )
+        self.install(lambda page: ["41"])
+        installed = Integration.objects.get(provider="gitea", name="alice")
+        association = OrganizationIntegration.objects.get(integration_id=installed.id)
+        # 50 was selected by another admin; this user's picker does not list it.
+        association.update(config={**association.config, "repository_ids": [41, 50]})
+        rows = {
+            repo_id: Repository.objects.create(
+                organization_id=self.organization.id,
+                integration_id=installed.id,
+                provider="integrations:gitea",
+                name=f"alice/{repo_id}",
+                external_id=str(repo_id),
+                config={"repo_id": repo_id, "hook_id": repo_id + 100},
+            )
+            for repo_id in (41, 50)
+        }
+
+        def statuses():
+            return {k: Repository.objects.get(id=r.id).status for k, r in rows.items()}
+
+        def selection():
+            return OrganizationIntegration.objects.get(id=association.id).config.get(
+                "repository_ids", "every repository"
+            )
+
+        def as_rendered(page):
+            return re.findall(r'name="repository" value="(\d+)" checked', page)
+
+        page = self.install(as_rendered)
+        assert as_rendered(page) == ["41"] and "already installed" in page
+        assert selection() == [41, 50]
+        assert statuses() == {41: ObjectStatus.ACTIVE, 50: ObjectStatus.ACTIVE}
+
+        association.update(config={})
+        assert as_rendered(self.install(as_rendered)) == ["43", "41"]
+        assert selection() == "every repository", "a key-less install stays key-less"
+        self.install(lambda page: ["41"])
+        assert selection() == [41, 50], "unticking 43 keeps every imported repository"
+
+        self.install(lambda page: [])
+        assert selection() == [50], "only an untick deselects"
+        assert statuses() == {41: ObjectStatus.PENDING_DELETION, 50: ObjectStatus.ACTIVE}
 
     def test_install_page_lets_the_user_choose_among_permitted_organizations(self):
         other = self.create_organization(name="<b>bar</b>", owner=self.user)
