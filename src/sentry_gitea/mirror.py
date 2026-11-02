@@ -21,9 +21,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 FETCH_INTERVAL = 300
-GIT_TIMEOUT = 60
+# Local reads and fetches must fit Sentry's 90 s commit-context deadline; clones run in a task.
+LOCAL_TIMEOUT = 10
+FETCH_TIMEOUT = 30
 CLONE_TIMEOUT = 1500
-LOCK_TIMEOUT = 30
+LOCK_TIMEOUT = 10
 FETCHED_STAMP = "sentry-gitea-fetched"
 REFSPECS = ("+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*")
 
@@ -122,17 +124,25 @@ class GitMirror:
             shutil.rmtree(partial, ignore_errors=True)
         return True
 
-    def refresh(self, remote: Callable[[], Remote]) -> bool:
-        """Fetch all branches and tags, at most once per fetch interval. Returns whether it did."""
-        if not self._fetch_due():
+    def refresh(
+        self, remote: Callable[[], Remote], *, timeout: float = FETCH_TIMEOUT, force: bool = False
+    ) -> bool:
+        """Fetch all branches and tags, at most once per fetch interval unless forced.
+
+        Returns whether it fetched; a fetch already running in another process counts as no.
+        """
+        if not force and not self._fetch_due():
             return False
-        with self._locked():
-            if not self._fetch_due():
-                return False
-            # Stamped before fetching, so an unreachable Gitea is retried once per interval.
-            self._stamp(self.path)
-            self._fetch(self.path, remote(), GIT_TIMEOUT)
-            return True
+        try:
+            with self._locked():
+                if not self.exists() or not (force or self._fetch_due()):
+                    return False
+                # Stamped before fetching, so an unreachable Gitea is retried once per interval.
+                self._stamp(self.path)
+                self._fetch(self.path, remote(), timeout)
+                return True
+        except MirrorBusy:
+            return False
 
     def resolve(self, ref: str) -> str | None:
         """The commit `ref` names in the mirror, or None."""
@@ -165,10 +175,10 @@ class GitMirror:
         }
 
     def delete(self) -> None:
-        with self._locked():
+        # The lock file stays: unlinking it would let a waiting process and a new one both lock.
+        with self._locked(timeout=LOCK_TIMEOUT * 3):
             shutil.rmtree(self.path, ignore_errors=True)
             self._remove_partial_clones()
-        self._lock_path.unlink(missing_ok=True)
 
     def _fetch_due(self) -> bool:
         try:
@@ -224,46 +234,63 @@ class GitMirror:
         git_dir: Path | None,
         *args: str,
         remote: Remote | None = None,
-        timeout: float = GIT_TIMEOUT,
+        timeout: float = LOCAL_TIMEOUT,
     ) -> subprocess.CompletedProcess[str]:
-        env = {
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "LC_ALL": "C",
-            "GIT_TERMINAL_PROMPT": "0",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-        }
-        if remote is not None:
-            # The token travels in the environment only: never in argv (visible in `ps`) or on disk.
-            env |= {
-                "GIT_CONFIG_COUNT": "1",
-                "GIT_CONFIG_KEY_0": "http.extraHeader",
-                "GIT_CONFIG_VALUE_0": f"Authorization: Bearer {remote.token}",
-            }
         argv = ["git", "-c", f"core.hooksPath={os.devnull}", "-c", "gc.autoDetach=false"]
         if git_dir is not None:
             argv += ["--git-dir", str(git_dir)]
-        try:
-            process = subprocess.Popen(
-                [*argv, *args],
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                start_new_session=True,
-            )
-        except FileNotFoundError:
-            raise GitError("git is not installed in this image.") from None
+        process = _spawn([*argv, *args], remote)
         try:
             stdout, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            # Kills helpers such as git-remote-https too, not only the git process.
-            os.killpg(process.pid, signal.SIGKILL)
-            process.communicate()
+            _kill(process)
             raise GitError(f"git {args[0]} timed out after {timeout:.0f} s.") from None
+        except BaseException:
+            # Such as the task's processing deadline: git must not outlive the lock it ran under.
+            _kill(process)
+            raise
         return subprocess.CompletedProcess(
             process.args,
             process.returncode,
             stdout.decode(errors="replace"),
             stderr.decode(errors="replace"),
         )
+
+
+def _spawn(argv: list[str], remote: Remote | None) -> subprocess.Popen[bytes]:
+    # Builds the token-bearing environment in a frame that is gone before git runs, so error
+    # reports with local variables cannot capture it.
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "LC_ALL": "C",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+    }
+    if remote is not None:
+        # The token travels in the environment only: never in argv (visible in `ps`) or on disk.
+        env |= {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "http.extraHeader",
+            "GIT_CONFIG_VALUE_0": f"Authorization: Bearer {remote.token}",
+        }
+    try:
+        return subprocess.Popen(
+            argv,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except FileNotFoundError:
+        raise GitError("git is not installed in this image.") from None
+
+
+def _kill(process: subprocess.Popen[bytes]) -> None:
+    """Kill git and its helpers, such as git-remote-https, which share its process group."""
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.communicate()

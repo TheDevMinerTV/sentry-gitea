@@ -6,7 +6,7 @@ Registered through `TASKWORKER_IMPORTS += ("sentry_gitea.integration.tasks",)` i
 - `backfill_push` recovers commits that Gitea truncated from a push payload. Commits are
   upserted page by page, so a retry or a replayed delivery only repeats idempotent writes.
 - `mirror_repository` clones the bare git mirror that blame-based suspect commits read
-  (GITEA_BLAME_ENABLED). Creating an existing mirror is a no-op.
+  (GITEA_BLAME_ENABLED), or fetches into an existing one when a fetch during blame failed.
 - `refresh_identities` keeps idle installations authorized: Gitea refresh tokens expire
   (`REFRESH_TOKEN_EXPIRATION_TIME`, 730 h by default) unless used. Operators schedule it with
   `TASKWORKER_SCHEDULES["gitea-identity-refresh"] = {"task":
@@ -33,7 +33,7 @@ from sentry_gitea.api.client import is_sha
 from sentry_gitea.api.webhooks import PayloadError, is_zero_sha, normalize_api_commit
 from sentry_gitea.mirror import CLONE_TIMEOUT, GitError
 
-from .blame import BLAME_FAILED, clone_mirror
+from .blame import BLAME_FAILED, sync_mirror
 from .commits import store_commits
 from .identity import ConfigurationError, GiteaIdentityProvider, OAuthSettings, log_failure
 from .repository import PROVIDER, SYNC_FAILED, GiteaRepositoryProvider
@@ -214,6 +214,6 @@ def mirror_repository(repository_id: int) -> None:
         installation = GiteaRepositoryProvider(PROVIDER).get_installation(
             repo.integration_id, repo.organization_id
         )
-        clone_mirror(installation, repo)
-    except (GitError, ApiError, IntegrationError) as error:
+        sync_mirror(installation, repo)
+    except (GitError, ApiError, IntegrationError, OSError) as error:
         log_failure(logger, BLAME_FAILED, error, operation="mirror", repository_id=repository_id)

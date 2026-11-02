@@ -400,14 +400,18 @@ Clones and fetches use `<GITEA_BASE_URL>/<owner>/<name>.git`, where `owner/name`
 repository ID through the API first. The installation's OAuth access token is refreshed if needed
 and passed as `http.extraHeader=Authorization: Bearer …` through git's `GIT_CONFIG_*` environment
 variables. It never appears in argv, in the mirror's `config` (which stores no remote at all), or
-in logs. Git runs with prompts, system and global configuration and hooks disabled, with a timeout
-(60 seconds per fetch or blame, 25 minutes per clone). A file lock next to each mirror serializes
-clone, fetch and delete across processes. A clone goes to a temporary directory and becomes the
-mirror through an atomic rename, so an interrupted clone never looks like a mirror; the next clone
-removes its leftovers.
+in logs. Git runs with prompts, system and global configuration and hooks disabled. Timeouts kill
+git and its helper processes: 10 seconds for a local command, 30 seconds for a fetch during blame,
+25 minutes for a clone. One blame request stops starting git commands after 45 seconds, inside
+Sentry's 90-second task deadline. A fetch that fails during blame queues the mirror task, which
+fetches again with the clone's time limit. A file lock next to each mirror (`<id>.lock`, kept after
+deletion) serializes clone, fetch and delete across processes. A clone goes to a temporary
+directory and becomes the mirror through an atomic rename, so an interrupted clone never looks like
+a mirror; the next clone removes its leftovers.
 
 Deleting a repository in Sentry deletes its mirror once no other live Sentry repository of the same
-installation uses it. Failures are logged as `sentry-gitea: blame failed` with an `operation` and
+installation uses it. Uninstalling the integration does not; delete
+`<GITEA_BLAME_MIRROR_DIR>/<integration id>/` yourself. Failures are logged as `sentry-gitea: blame failed` with an `operation` and
 IDs; Sentry then records no suspect commit for that issue.
 
 Sentry calls pull-request comment hooks only for providers that implement its PR comment workflow.

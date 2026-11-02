@@ -315,7 +315,7 @@ class GiteaRepositoryProvider(IntegrationRepositoryProvider):
             return  # Another organization sharing this integration still blames from it.
         try:
             repository_mirror(repo.integration_id, repo_id).delete()
-        except GitError as error:
+        except (GitError, OSError) as error:
             log_failure(
                 logger, BLAME_FAILED, error, operation="delete_mirror", repository_id=repo.id
             )

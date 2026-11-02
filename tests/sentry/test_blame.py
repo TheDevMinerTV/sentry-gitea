@@ -1,6 +1,7 @@
 """Blame-based suspect commits from local mirrors, against a real repository served over HTTP."""
 
 import functools
+import os
 import tempfile
 from datetime import timedelta
 from pathlib import Path
@@ -24,7 +25,7 @@ from sync_fixtures import WEBHOOK_REPO, SyncFixture
 
 from sentry_gitea.integration.provider import GiteaIntegrationProvider
 from sentry_gitea.integration.repository import GiteaRepositoryProvider
-from sentry_gitea.mirror import mirror_path
+from sentry_gitea.mirror import FETCHED_STAMP, mirror_path
 
 TOKEN = "synthetic-integration-access"
 
@@ -117,6 +118,9 @@ class TestBlame(SyncFixture):
         self.mock_lookup()
         with self.tasks():
             self.installation.get_blame_for_files([self.line(2)], extra={})
+        # Only the known-commit shortcut, not the fetch throttle, may keep this offline.
+        stamp = mirror_path(self.mirrors, self.integration.id, 41) / FETCHED_STAMP
+        os.utime(stamp, (0, 0))
         requests = len(self.server.authorizations), len(responses.calls)
         commit = self.source.commits["Add app"]
         blamed = self.installation.get_blame_for_files([self.line(2, ref=commit)], extra={})
@@ -139,6 +143,7 @@ class TestBlame(SyncFixture):
     def test_commit_context_task_creates_the_suspect_commit(self):
         self.mock_lookup()
         GiteaIntegrationProvider().setup()
+        assert post_process._project_has_usable_code_mapping(self.project)
         group = self.create_group(project=self.project, first_seen=timezone.now())
         frames = [{"filename": "app.py", "abs_path": "app.py", "lineno": 2, "in_app": True}]
         with self.tasks():
@@ -173,7 +178,6 @@ class TestBlame(SyncFixture):
         self.repo.delete()
         provider.on_delete_repository(shared)
         assert not path.exists()
-        assert not path.with_suffix(".lock").exists()
 
     @responses.activate
     @blame_settings

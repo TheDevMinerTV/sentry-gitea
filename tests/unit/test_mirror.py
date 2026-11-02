@@ -1,5 +1,7 @@
+import socket
 import subprocess
 import threading
+import time
 from datetime import UTC, datetime
 
 import pytest
@@ -208,7 +210,20 @@ def test_delete_removes_the_mirror_and_is_idempotent(published, remote, mirror):
     mirror.delete()
     mirror.delete()
     assert not mirror.exists()
-    assert not mirror.path.with_suffix(".lock").exists()
+    assert mirror.refresh(remote, force=True) is False
+    assert mirror.clone(remote) is True
+
+
+def test_git_is_killed_at_its_timeout(tmp_path, mirror):
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    url = f"http://127.0.0.1:{listener.getsockname()[1]}/stalled.git"
+    started = time.monotonic()
+    with pytest.raises(GitError, match="timed out"):
+        GitMirror._git(None, "ls-remote", url, remote=Remote(url, TOKEN), timeout=1)
+    assert time.monotonic() - started < 5
+    listener.close()
 
 
 def test_missing_git_binary_is_a_git_error(mirror, monkeypatch):

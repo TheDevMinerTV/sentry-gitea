@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import functools
 import logging
+import time
 from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
@@ -16,13 +18,15 @@ from sentry.integrations.source_code_management.commit_context import (
 )
 from sentry.shared_integrations.exceptions import ApiError, IntegrationError
 
-from sentry_gitea.mirror import GitError, GitMirror, Remote, mirror_path
+from sentry_gitea.mirror import CLONE_TIMEOUT, GitError, GitMirror, Remote, mirror_path
 
 from .identity import log_failure
 
 logger = logging.getLogger(__name__)
 DEFAULT_MIRROR_DIR = "/data/sentry-gitea/mirrors"
 BLAME_FAILED = "sentry-gitea: blame failed"
+# Leaves room for one last git call inside Sentry's 90 s commit-context deadline.
+BLAME_BUDGET = 45
 
 
 def blame_enabled() -> bool:
@@ -46,12 +50,21 @@ def remote_for(installation: Any, repo_id: int) -> Remote:
     return Remote(f"{client.base_url}/{current['full_name']}.git", client.access_token())
 
 
-def clone_mirror(installation: Any, repo: Any) -> bool:
+def sync_mirror(installation: Any, repo: Any) -> None:
+    """Clone the mirror, or else fetch into it now, with a clone's time budget."""
     repo_id = stable_repo_id(repo)
     if repo_id is None:
-        return False
+        return
     mirror = repository_mirror(installation.model.id, repo_id)
-    return mirror.clone(lambda: remote_for(installation, repo_id))
+    remote = functools.partial(remote_for, installation, repo_id)
+    if not mirror.clone(remote):
+        mirror.refresh(remote, timeout=CLONE_TIMEOUT, force=True)
+
+
+def _queue_sync(repo: Any) -> None:
+    from .tasks import mirror_repository
+
+    mirror_repository.delay(repository_id=repo.id)
 
 
 def blame_for_files(installation: Any, files: Sequence[SourceLineInfo]) -> list[FileBlameInfo]:
@@ -59,11 +72,12 @@ def blame_for_files(installation: Any, files: Sequence[SourceLineInfo]) -> list[
     for file in files:
         by_repo[file.repo.id].append(file)
     blamed: list[FileBlameInfo] = []
+    deadline = time.monotonic() + BLAME_BUDGET
     for repo_files in by_repo.values():
         repo = repo_files[0].repo
         try:
-            blamed += _blame_repository(installation, repo, repo_files)
-        except (GitError, ApiError, IntegrationError) as error:
+            blamed += _blame_repository(installation, repo, repo_files, deadline)
+        except (GitError, ApiError, IntegrationError, OSError) as error:
             log_failure(
                 logger,
                 BLAME_FAILED,
@@ -75,17 +89,15 @@ def blame_for_files(installation: Any, files: Sequence[SourceLineInfo]) -> list[
 
 
 def _blame_repository(
-    installation: Any, repo: Any, files: Sequence[SourceLineInfo]
+    installation: Any, repo: Any, files: Sequence[SourceLineInfo], deadline: float
 ) -> list[FileBlameInfo]:
     repo_id = stable_repo_id(repo)
     if repo_id is None:
         return []
     mirror = repository_mirror(installation.model.id, repo_id)
     if not mirror.exists():
-        from .tasks import mirror_repository
-
         # Clones can outlast the commit-context task's deadline; they get a task of their own.
-        mirror_repository.delay(repository_id=repo.id)
+        _queue_sync(repo)
         if not mirror.exists():
             logger.info(
                 "sentry-gitea: blame skipped, mirror not ready",
@@ -98,8 +110,12 @@ def _blame_repository(
     blamed: list[FileBlameInfo] = []
     for ref, ref_files in by_ref.items():
         sha = ref if mirror.has_commit(ref) else None
-        if sha is None:
-            mirror.refresh(lambda: remote_for(installation, repo_id))
+        if sha is None and time.monotonic() < deadline:
+            try:
+                mirror.refresh(lambda: remote_for(installation, repo_id))
+            except GitError:
+                _queue_sync(repo)  # A slow fetch gets the task's longer budget.
+                raise
             sha = mirror.resolve(ref)
         if sha is None:
             continue
@@ -107,6 +123,12 @@ def _blame_repository(
         for file in ref_files:
             by_path[file.path].append(file)
         for path, path_files in by_path.items():
+            if time.monotonic() >= deadline:
+                logger.info(
+                    "sentry-gitea: blame budget exhausted",
+                    extra={"integration_id": installation.model.id, "repository_id": repo.id},
+                )
+                return blamed
             lines = mirror.blame(sha, path, [f.lineno for f in path_files if f.lineno])
             blamed += [
                 FileBlameInfo(

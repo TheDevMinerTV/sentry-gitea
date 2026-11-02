@@ -390,12 +390,14 @@ Remove things in this order, so that nothing is left pointing at code that is go
 4. **Plugins.** Remove alert-rule actions that use Gitea Alerts. In each project's plugin settings,
    use **Reset Configuration** (this clears the stored token) and disable both plugins. Delete the
    personal access tokens in Gitea.
-5. **Configuration.** Remove every sentry-gitea line from `sentry/sentry.conf.py` (`ROOT_URLCONF`,
+5. **Mirrors.** If you used `GITEA_BLAME_ENABLED`, delete `GITEA_BLAME_MIRROR_DIR`
+   (`/data/sentry-gitea/mirrors` by default) from the `sentry-data` volume.
+6. **Configuration.** Remove every sentry-gitea line from `sentry/sentry.conf.py` (`ROOT_URLCONF`,
    `SENTRY_DEFAULT_INTEGRATIONS`, the pagination allowlist, `TASKWORKER_IMPORTS`, the
    `TASKWORKER_SCHEDULES` entry and all `GITEA_*` settings) and the `pip install` line from
    `sentry/enhance-image.sh`. Delete the wheel from `sentry/`. Leaving these lines without the package
    breaks Sentry, because the URL configuration and the task module can no longer be imported.
-6. **Rebuild** the images and recreate all Sentry services, for example with `./install.sh`.
+7. **Rebuild** the images and recreate all Sentry services, for example with `./install.sh`.
 
 ## Documentation
 
