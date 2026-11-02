@@ -193,6 +193,9 @@ class GiteaRepositoryProvider(IntegrationRepositoryProvider):
                 row.update(config={**config, "hook_id": hook_id})
 
     def build_repository_config(self, organization: Any, data: dict[str, Any]) -> RepositoryConfig:
+        if "repository" not in data:
+            # Repository sync passes get_repositories() rows, not get_repository_data() results.
+            data = self.get_repository_data(organization, data)
         installation = self.get_installation(data["installation"], organization.id)
         remote = data["repository"]
         with (

@@ -219,8 +219,11 @@ Wrong-owner repository selections are rejected even if the OAuth user has access
 
 ## Repositories and webhooks
 
-Add a repository from **Organization Settings → Repositories** (or the Gitea integration's
-configuration page), or with the API:
+Sentry 26.10 has no Add Repository form. Its **Organization Settings → Repositories** page lists
+what Sentry's repository sync imports: hover the Gitea owner's repository count and click **Sync
+now**, or wait for the daily sync. The sync imports every repository of the installed owner that the
+authorizing user can see, and disables repositories that disappeared from it. To add one repository,
+use the API:
 
 ```text
 POST /api/0/organizations/<org>/repos/

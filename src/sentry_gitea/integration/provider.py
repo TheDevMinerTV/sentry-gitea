@@ -187,6 +187,12 @@ class GiteaIntegrationProvider(IntegrationProvider):
         bindings.add(
             "integration-repository.provider", GiteaRepositoryProvider, id="integrations:gitea"
         )
+        # Sentry 26.10's Repositories page has no Add Repository form: it only lists what the
+        # repository sync (its "Sync now" button and a daily beat) imports for listed providers.
+        from sentry.integrations.source_code_management import sync_repos
+
+        if self.key not in sync_repos.SCM_SYNC_PROVIDERS:
+            sync_repos.SCM_SYNC_PROVIDERS.append(self.key)
         if blame_enabled():
             # Sentry only runs blame for providers in this list. Gitea stays out unless enabled:
             # listed providers with a code mapping lose the release-based suspect commits.
