@@ -84,8 +84,8 @@ class PushWebhook(GiteaWebhook):
         if event.deleted:
             return  # Branch deletion: nothing to import.
         repo = kwargs["repo"]
-        mark_mirror_stale(repo)
         store_commits(repo, event.commits)
+        mark_mirror_stale(repo)
         # Branch creation imports only the delivered commits; no history walk.
         if event.truncated and not event.created:
             backfill_push.delay(repo.id, event.before, event.after)

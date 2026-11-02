@@ -90,9 +90,19 @@ class TestAddRepository(SyncFixture):
 
     @responses.activate
     def test_repository_sync_adds_owner_repositories_with_one_signed_hook(self):
+        read_only = {
+            **WEBHOOK_REPO,
+            "id": 42,
+            "name": "read-only",
+            "full_name": "team/read-only",
+            "permissions": {"admin": False, "push": True, "pull": True},
+        }
         responses.get(
-            API + "/repos/search", json={"data": [WEBHOOK_REPO]}, headers={"X-Total-Count": "1"}
+            API + "/repos/search",
+            json={"data": [read_only, WEBHOOK_REPO]},
+            headers={"X-Total-Count": "2"},
         )
+        responses.get(API + "/repos/team/read-only", json=read_only)
         responses.get(API + "/repos/team/repo", json=WEBHOOK_REPO)
         responses.get(HOOKS, json=[], headers={"X-Total-Count": "0"})
         responses.post(HOOKS, json={"id": 4, "type": "gitea"}, status=201)

@@ -236,7 +236,7 @@ Details, label colors, recovery semantics and logging: [docs/PLUGINS.md](docs/PL
 4. On any Sentry issue, use the Gitea issue actions to **Create** or **Link**.
 5. Optional features:
    - **Repositories:** Sentry 26.10 has no Add Repository form. It imports every repository of the
-     installed owner through its repository sync: in **Organization Settings → Repositories**, hover
+     installed owner that the authorizing user administers through its repository sync: in **Organization Settings → Repositories**, hover
      the Gitea owner's repository count and click **Sync now**, or wait for Sentry's daily sync.
      Repositories that disappear from the owner are disabled at the next sync. Each repository gets
      one webhook (push, issue, issue-assignment and pull-request events) at

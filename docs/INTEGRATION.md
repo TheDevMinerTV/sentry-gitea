@@ -222,8 +222,9 @@ Wrong-owner repository selections are rejected even if the OAuth user has access
 Sentry 26.10 has no Add Repository form. Its **Organization Settings → Repositories** page lists
 what Sentry's repository sync imports: hover the Gitea owner's repository count and click **Sync
 now**, or wait for the daily sync. The sync imports every repository of the installed owner that the
-authorizing user can see, and disables repositories that disappeared from it. To add one repository,
-use the API:
+authorizing user administers, skips the others (logged as `sentry-gitea: repository sync skipped a
+repository`), and disables repositories that disappeared from the owner. To add one repository, use
+the API:
 
 ```text
 POST /api/0/organizations/<org>/repos/

@@ -192,10 +192,24 @@ class GiteaRepositoryProvider(IntegrationRepositoryProvider):
             if config.get("hook_id") and str(config["hook_id"]) != str(hook_id):
                 row.update(config={**config, "hook_id": hook_id})
 
+    def create_repositories(self, configs: list[dict[str, Any]], organization: Any) -> Any:
+        """Repository sync: import the owner's repositories this installation can hook.
+
+        Sentry passes get_repositories() rows and stops the whole batch at the first error, so
+        each row is looked up first and one the user cannot administer is left out.
+        """
+        hookable = []
+        for config in configs:
+            try:
+                hookable.append(self.get_repository_data(organization, config))
+            except IntegrationError:
+                logger.info(
+                    "sentry-gitea: repository sync skipped a repository",
+                    extra={"external_id": config.get("external_id")},
+                )
+        return super().create_repositories(hookable, organization)
+
     def build_repository_config(self, organization: Any, data: dict[str, Any]) -> RepositoryConfig:
-        if "repository" not in data:
-            # Repository sync passes get_repositories() rows, not get_repository_data() results.
-            data = self.get_repository_data(organization, data)
         installation = self.get_installation(data["installation"], organization.id)
         remote = data["repository"]
         with (
