@@ -224,9 +224,14 @@ GET /extensions/gitea/search/<organization_id_or_slug>/<integration_id>/?field=e
 ```
 
 Both return lists of `{label, value}` objects and require normal Sentry organization membership and
-access to the installation. Missing/blank queries and unsupported fields return 400, as required by
-Sentry's search base. Selectors are bounded to two pages of 50 results; narrow the search to find more.
-Wrong-owner repository selections are rejected even if the OAuth user has access to them.
+access to the installation. Repository choices are limited to the selection. Missing/blank
+queries and unsupported fields return 400, as required by Sentry's search base. Selectors are bounded to two pages of 50 results; narrow the search to find more.
+With a stored selection, forms and the repository search read up to 20 pages, so that selected
+repositories that sort after the first 100 are offered too.
+Wrong-owner repository selections are rejected even if the OAuth user has access to them. So are
+repositories outside the selection: creating an issue, linking one, searching its issues and opening
+a form for it answer 400 with `Select a repository from the Gitea integration's repository
+selection.` Issues linked before a repository left the selection stay linked.
 
 ## Repositories and webhooks
 
@@ -274,8 +279,9 @@ only disables repositories the provider stops listing, keeps those with activity
 days, and re-enables a disabled repository without its hook. Selecting the repository again imports
 a new row with a new hook at once, even before the old row's deletion runs.
 
-The selection does not limit issue forms: any repository of the installed owner can still be used to
-create and link issues.
+The selection also limits issue forms and the repository search: only selected repositories can be
+used to create and link issues (see [Create and link issues](#create-and-link-issues)). An
+installation without a stored selection offers every repository of the owner.
 
 #### Reinstalling
 

@@ -33,6 +33,7 @@ from sentry_gitea.render import (
 )
 
 from .identity import OAuthSettings, log_failure
+from .selection import is_selected
 from .utils import issue_key, parse_issue_key
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ CREATE_SALT = "sentry-gitea.create-context.v1"
 CONTEXT_MAX_AGE = 86400
 # A saved default repository answering with these statuses moved, vanished or became private.
 STALE_STATUSES = frozenset({301, 302, 307, 308, 403, 404})
+NOT_SELECTED = "Select a repository from the Gitea integration's repository selection."
 
 
 class StaleRepository(IntegrationError):
@@ -69,12 +71,27 @@ class GiteaIssues(SourceCodeIssueIntegration):
     def _search_url(self) -> str:
         return reverse("sentry-gitea-search", args=[self.organization_id, self.model.id])
 
+    def issue_repositories(
+        self, query: str | None = None, page_number_limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        """The selected repositories that have Gitea's built-in issue tracker."""
+        selection = self.repository_selection()
+        if selection is not None:
+            # Selected repositories can sort after the first pages of the owner's listing.
+            page_number_limit = None
+        rows = self.get_client().search_repositories(query, page_number_limit=page_number_limit)
+        return [row for row in rows if is_selected(selection, row["id"])]
+
+    def _selected(self, repo: dict[str, Any]) -> dict[str, Any]:
+        if not is_selected(self.repository_selection(), repo["id"]):
+            raise IntegrationFormError({"repo": [NOT_SELECTED]})
+        return repo
+
     def get_repository_choices(
         self, group: Any, params: Mapping[str, Any], page_number_limit: int | None = None
     ) -> tuple[str, list[tuple[str, str]]]:
-        # Issue forms need a built-in tracker; SCM/code mappings also support code-only repos.
-        available = self.get_client().search_repositories(page_number_limit=page_number_limit)
-        choices = {item["full_name"]: item["full_name"] for item in available}
+        rows = self.issue_repositories(page_number_limit=page_number_limit)
+        choices = {row["full_name"]: row["full_name"] for row in rows}
         requested = params.get("repo")
         if not requested and group is not None:
             requested = self.get_project_defaults(group.project_id).get("repo")
@@ -120,6 +137,8 @@ class GiteaIssues(SourceCodeIssueIntegration):
                 stale = True
         if stale:
             raise StaleRepository("The saved repository is no longer available. Select one.")
+        if not is_selected(self.repository_selection(), repo["id"]):
+            raise StaleRepository(NOT_SELECTED)
         return repo["full_name"], repo["full_name"]
 
     def _event_data(self, group: Any, event: Any) -> EventData:
@@ -316,7 +335,7 @@ class GiteaIssues(SourceCodeIssueIntegration):
                 ) from None
             group = self._create_context_group(data)
             client = self.get_client()
-            repo = client.get_repo(repo=data.get("repo"))
+            repo = self._selected(client.get_repo(repo=data.get("repo")))
             if group is None:
                 # No form context (a direct API call): a plain, non-idempotent create. Markers
                 # typed into the description are dropped so they cannot alias another group.
@@ -373,6 +392,7 @@ class GiteaIssues(SourceCodeIssueIntegration):
                 raise IntegrationFormError(
                     {"externalIssue": ["Issue and repository do not match."]}
                 )
+            self._selected(repo)
             issue = client.get_issue(number, repo=repo["full_name"])
             if str(issue.get("number")) != str(number):
                 raise IntegrationError("Gitea returned a different issue.")
@@ -381,7 +401,7 @@ class GiteaIssues(SourceCodeIssueIntegration):
     def search_issues(self, query: str | None, **kwargs: Any) -> list[dict[str, Any]]:
         with self._issue_operation():
             client = self.get_client()
-            repo = client.get_repo(repo=kwargs.get("repo"))
+            repo = self._selected(client.get_repo(repo=kwargs.get("repo")))
             return [
                 self._normalized_issue(repo, issue)
                 for issue in client.search_issues(query, repo=repo["full_name"])
