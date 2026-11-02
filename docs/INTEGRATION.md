@@ -459,7 +459,10 @@ directory and becomes the mirror through an atomic rename, so an interrupted clo
 a mirror; the next clone removes its leftovers.
 
 Deleting a repository in Sentry deletes its mirror once no other live Sentry repository of the same
-installation uses it. Uninstalling the integration does not; delete
+installation uses it. This also happens with blame off, so a mirror from an earlier period with blame
+on never outlives its repository; when there is no mirror, deletion creates nothing on disk. Push
+webhooks also mark an existing mirror stale while blame is off, so turning blame back on never blames
+on a branch head from before the pushes. Uninstalling the integration does not; delete
 `<GITEA_BLAME_MIRROR_DIR>/<integration id>/` yourself. Failures are logged as `sentry-gitea: blame failed` with an `operation` and
 IDs; Sentry then records no suspect commit for that issue.
 

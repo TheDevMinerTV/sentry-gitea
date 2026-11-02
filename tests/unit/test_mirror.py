@@ -214,6 +214,11 @@ def test_delete_removes_the_mirror_and_is_idempotent(published, remote, mirror):
     assert mirror.clone(remote) is True
 
 
+def test_deleting_a_mirror_that_was_never_cloned_creates_nothing(tmp_path, mirror):
+    mirror.delete()
+    assert not (tmp_path / "mirrors").exists()
+
+
 def test_git_is_killed_at_its_timeout(tmp_path, mirror):
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))

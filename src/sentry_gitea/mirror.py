@@ -179,6 +179,9 @@ class GitMirror:
         }
 
     def delete(self) -> None:
+        """Remove the mirror and partial clones; creates nothing when there is neither."""
+        if not self.exists() and not self._partial_clones():
+            return
         # The lock file stays: unlinking it would let a waiting process and a new one both lock.
         with self._locked(timeout=LOCK_TIMEOUT * 3):
             shutil.rmtree(self.path, ignore_errors=True)
@@ -195,8 +198,11 @@ class GitMirror:
     def _stamp(git_dir: Path) -> None:
         (git_dir / FETCHED_STAMP).touch()
 
+    def _partial_clones(self) -> list[Path]:
+        return list(self.path.parent.glob(f".{self.path.name}.tmp-*"))
+
     def _remove_partial_clones(self) -> None:
-        for partial in self.path.parent.glob(f".{self.path.name}.tmp-*"):
+        for partial in self._partial_clones():
             shutil.rmtree(partial, ignore_errors=True)
 
     def _fetch(self, git_dir: Path, remote: Remote, timeout: float) -> None:

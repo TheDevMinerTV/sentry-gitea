@@ -264,3 +264,43 @@ class TestBlame(SyncFixture):
             mirror_repository(repository_id=self.repo.id)
         assert not self.mirrors.exists()
         assert self.server.authorizations == []
+
+    @responses.activate
+    @blame_settings
+    def test_deleting_a_repository_with_blame_off_creates_no_mirror_directory(self):
+        with override_settings(GITEA_BLAME_ENABLED=False):
+            GiteaRepositoryProvider("integrations:gitea")._delete_mirror(self.repo)
+        assert not self.mirrors.exists()
+
+    @responses.activate
+    @blame_settings
+    def test_a_mirror_from_before_blame_was_off_is_deleted_and_recloned_fresh(self):
+        self.mock_lookup()
+        with self.tasks():
+            self.installation.get_blame_for_files([self.line(2)], extra={})
+        path = mirror_path(self.mirrors, self.integration.id, 41)
+        assert path.is_dir()
+        with override_settings(GITEA_BLAME_ENABLED=False):
+            GiteaRepositoryProvider("integrations:gitea")._delete_mirror(self.repo)
+        assert not path.exists()
+        pushed = self.source.commit(
+            "Rework b", {"app.py": "a\nbb\nc\n"}, author=ALICE, when=timezone.now()
+        )
+        with self.tasks():
+            self.installation.get_blame_for_files([self.line(2)], extra={})
+        blamed = self.installation.get_blame_for_files([self.line(2)], extra={})
+        assert [b.commit.commitId for b in blamed] == [pushed]
+
+    @responses.activate
+    @blame_settings
+    def test_a_push_while_blame_is_off_still_makes_the_next_blame_fetch(self):
+        self.mock_lookup()
+        with self.tasks():
+            self.installation.get_blame_for_files([self.line(2)], extra={})
+        pushed = self.source.commit(
+            "Rework b", {"app.py": "a\nbb\nc\n"}, author=ALICE, when=timezone.now()
+        )
+        with override_settings(GITEA_BLAME_ENABLED=False):
+            assert self.signed("push", self.push_payload()).status_code == 204
+        blamed = self.installation.get_blame_for_files([self.line(2)], extra={})
+        assert [b.commit.commitId for b in blamed] == [pushed]

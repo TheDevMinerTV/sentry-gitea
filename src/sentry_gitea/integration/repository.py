@@ -358,6 +358,7 @@ class GiteaRepositoryProvider(IntegrationRepositoryProvider):
     # Repository deletion (called by Sentry's deletion task with pending-deletion field names).
 
     def _delete_mirror(self, repo: Any) -> None:
+        """Also with blame off, so a mirror from before cannot outlive its repository."""
         repo_id = stable_repo_id(repo)
         if repo_id is None or repo.integration_id is None:
             return

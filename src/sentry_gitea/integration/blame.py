@@ -45,10 +45,18 @@ def stable_repo_id(repo: Any) -> int | None:
 
 
 def mark_mirror_stale(repo: Any) -> None:
-    """After a push, a branch blame must fetch instead of reading the branch's old head."""
+    """After a push, a branch blame must fetch instead of reading the branch's old head.
+
+    Also with blame off: a mirror left from before must not serve old heads once it is back on.
+    """
     repo_id = stable_repo_id(repo)
-    if blame_enabled() and repo_id is not None and repo.integration_id is not None:
+    if repo_id is None or repo.integration_id is None:
+        return
+    try:
         repository_mirror(repo.integration_id, repo_id).mark_stale()
+    except OSError as error:
+        # An unreadable mirror root must not fail the push webhook, least of all with blame off.
+        log_failure(logger, BLAME_FAILED, error, operation="mark_stale", repository_id=repo.id)
 
 
 def remote_for(installation: Any, repo_id: int) -> Remote:
