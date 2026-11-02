@@ -57,6 +57,15 @@ class SourceRepo:
         git(self.served, "update-server-info")
         return self.commits[name]
 
+    def tag(self, name: str, commit: str, *, annotated: bool = False) -> None:
+        git(self.work, "tag", *(["-a", "-m", name] if annotated else []), name, commit)
+        git(self.work, "push", "-q", str(self.served), f"refs/tags/{name}")
+        git(self.served, "update-server-info")
+
+    def branch(self, name: str, commit: str) -> None:
+        git(self.work, "push", "-q", "--force", str(self.served), f"{commit}:refs/heads/{name}")
+        git(self.served, "update-server-info")
+
 
 def source_repo(root: Path, first: datetime, second: datetime) -> SourceRepo:
     """`app.py` with line 2 from Bob's "Fix b" and lines 1 and 3 from Alice's "Add app"."""

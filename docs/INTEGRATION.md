@@ -437,7 +437,11 @@ repository:
    or tag name, or an unknown commit) fetches all branches and tags first, at most once every
    5 minutes per mirror, then resolves the name. A push webhook for the repository lifts that limit
    for the next fetch, so an issue right after a push is not blamed on the branch's old head. An
-   unknown revision skips its frames.
+   unknown revision skips its frames. Sentry 26.10 asks for the code mapping's branch
+   (`default_branch`, or `master` when empty); release-based suspect commits never reach blame. A
+   name resolves to `refs/heads/<name>` first and `refs/tags/<name>` second, so a tag never hides
+   the branch of the same name. A full SHA is used as is. Other revision syntax, such as `main~1`
+   or an abbreviated SHA, does not resolve.
 3. **Blame.** `git blame --line-porcelain` runs once per file, with one `-L n,n` per frame line.
    Author name and email, committer time and the commit summary become Sentry's `CommitInfo`.
    Missing files and lines past the end of a file are skipped.

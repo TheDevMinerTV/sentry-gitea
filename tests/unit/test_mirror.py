@@ -153,6 +153,24 @@ def test_blame_attributes_each_line_and_skips_missing_lines_files_and_revisions(
 
 
 @needs_git
+def test_a_branch_wins_over_a_tag_of_the_same_name_and_only_exact_names_resolve(
+    published, remote, mirror
+):
+    repo, _server = published
+    first, second = repo.commits["Add app"], repo.commits["Fix b"]
+    repo.tag("main", first, annotated=True)
+    repo.tag("v1", first, annotated=True)
+    repo.branch("refs/heads/main", first)
+    mirror.clone(remote)
+    assert mirror.resolve("main") == second
+    assert mirror.resolve("v1") == first
+    assert mirror.resolve(first) == first
+    assert mirror.resolve("refs/heads/main") == first
+    for ref in ("main~1", "main^{tree}", first[:12], "v*", "HEAD", "refs/tags/v1", "-v1", ""):
+        assert mirror.resolve(ref) is None, ref
+
+
+@needs_git
 def test_refresh_is_throttled_and_picks_up_new_commits(published, remote, tmp_path):
     repo, server = published
     mirror = GitMirror(mirror_path(tmp_path / "mirrors", 7, 41), fetch_interval=3600)

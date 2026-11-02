@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -88,6 +89,14 @@ def _is_full_sha(ref: str) -> bool:
     return len(ref) in (40, 64) and all(c in "0123456789abcdef" for c in ref)
 
 
+_REF_NAME = re.compile(r"(?!-)(?!.*\.\.)(?!.*@\{)(?!.*//)[^\x00-\x20\x7f~^:?*\[\\]+(?<![/.])")
+
+
+def _is_ref_name(name: str) -> bool:
+    """A short branch or tag name git accepts; also keeps for-each-ref glob characters out."""
+    return bool(_REF_NAME.fullmatch(name)) and not name.endswith(".lock") and name != "@"
+
+
 class GitMirror:
     def __init__(self, path: Path, *, fetch_interval: float = FETCH_INTERVAL) -> None:
         self.path = path
@@ -149,10 +158,29 @@ class GitMirror:
         (self.path / FETCHED_STAMP).unlink(missing_ok=True)
 
     def resolve(self, ref: str) -> str | None:
-        """The commit `ref` names in the mirror, or None."""
-        if not ref or ref.startswith("-") or "\n" in ref:
+        """The commit `ref` names in the mirror: a full SHA as is, else branch `ref`, else tag
+        `ref`. Never git's own lookup order, which prefers a tag over a same-named branch."""
+        if _is_full_sha(ref):
+            return ref if self._peel(ref) == ref else None
+        if not _is_ref_name(ref):
             return None
-        result = self._git(self.path, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+        candidates = (f"refs/heads/{ref}", f"refs/tags/{ref}")
+        listed = self._git(self.path, "for-each-ref", "--format=%(refname)", *candidates)
+        existing = set(listed.stdout.splitlines()) if listed.returncode == 0 else set()
+        for qualified in candidates:
+            if qualified in existing:
+                return self._peel(qualified)
+        return None
+
+    def _peel(self, revision: str) -> str | None:
+        result = self._git(
+            self.path,
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            f"{revision}^{{commit}}",
+        )
         if result.returncode != 0:
             return None
         return result.stdout.strip() or None
