@@ -160,11 +160,16 @@ From a Sentry issue's integration actions, select the installed Gitea owner:
 
 - **Create:** choose an owner/name repository, edit the generated title and description, optionally
   enter comma-separated labels and an assignee's Gitea username. Missing labels are created and their
-  numeric IDs are submitted. The repository selection is remembered per Sentry project. If the
-  remembered repository is no longer usable (deleted, moved, transferred to another owner, no
-  longer accessible, or with issues disabled or moved to an external tracker), the form opens with
-  no repository selected.
-- **Link:** choose a repository and search by issue number (`12` or `#12`) or title text. Pull requests
+  numeric IDs are submitted. The form offers the selected repositories that have Gitea's built-in
+  issue tracker (see [Repository selection](#repository-selection)). It preselects, in this order:
+  1. the repository last used to create or link an issue for this Sentry project, if it is still
+     selected and usable (not deleted, moved, transferred to another owner, inaccessible, or with
+     issues disabled or moved to an external tracker);
+  2. the repository of the project's oldest code mapping through this installation that the form
+     offers;
+  3. the first repository the form offers.
+- **Link:** choose a repository and search by issue number (`12` or `#12`) or title text. The
+  repository choices and the preselected repository are the same as for **Create**. Pull requests
   are excluded. The optional comment defaults to the Sentry issue URL and includes a hidden
   `<!-- sentry-gitea-link <group ID> -->` marker. Leave the comment blank to omit the backlink.
   The form carries signed context so editing the comment preserves its marker. Retries check existing

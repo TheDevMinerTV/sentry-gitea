@@ -8,9 +8,10 @@ import responses
 from sentry.integrations.models.external_issue import ExternalIssue
 from sentry.models.group import Group
 from sentry.testutils.silo import no_silo_test
-from test_integration_provider import API, REPO, IntegrationFixture
+from test_integration_provider import API, PUBLIC, REPO, IntegrationFixture
 
-# Gitea lists alphabetically, and an unselected repository sorts first.
+# Gitea lists alphabetically. The mapped repository is not the first selected one, and an
+# unselected one sorts first, so neither default can come from list order alone.
 ALPHA = {**REPO, "id": 42, "name": "alpha", "full_name": "team/alpha"}
 WEB = {**REPO, "id": 43, "name": "web", "full_name": "team/web"}
 LISTED = [ALPHA, REPO, WEB]
@@ -147,3 +148,47 @@ class TestIssueFormScope(IntegrationFixture):
         )
         assert explicit.status_code == 400, explicit.data
         assert NOT_SELECTED in str(explicit.data)
+
+    @responses.activate
+    def test_forms_default_to_the_code_mapped_repository(self):
+        self.mock_owner()
+        self.store(repository_ids=SELECTED)
+        self.map_code_to(WEB)
+        assert self.defaults() == "team/web"
+
+    @responses.activate
+    def test_the_repository_last_used_for_the_project_beats_the_code_mapping(self):
+        self.mock_owner()
+        self.store(repository_ids=SELECTED)
+        self.map_code_to(WEB)
+        self.remember("team/repo")
+        assert self.defaults() == "team/repo"
+
+    @responses.activate
+    def test_a_last_used_repository_that_is_no_longer_selected_yields_to_the_code_mapping(self):
+        self.mock_owner()
+        self.store(repository_ids=SELECTED)
+        self.map_code_to(WEB)
+        self.remember("team/alpha")
+        assert self.defaults() == "team/web"
+        assert "team/alpha" not in self.choices("create")
+
+    @responses.activate
+    def test_without_a_usable_mapping_the_first_selected_repository_is_the_default(self):
+        self.mock_owner()
+        self.store(repository_ids=SELECTED)
+        self.map_code_to(ALPHA)
+        self.map_code_to(WEB, project=self.create_project(organization=self.organization))
+        assert self.defaults() == "team/repo"
+
+    @responses.activate
+    def test_an_issue_of_the_default_repository_links(self):
+        self.mock_owner()
+        self.store(repository_ids=SELECTED)
+        self.map_code_to(WEB)
+        responses.get(API + "/repos/team/web/issues/7", json=self.remote_issue())
+        link = self.client.put(
+            self.issue_endpoint(), {"repo": self.defaults(), "externalIssue": "43#7"}
+        )
+        assert link.status_code == 201, link.data
+        assert link.data["url"] == PUBLIC + "/team/web/issues/7"

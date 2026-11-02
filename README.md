@@ -50,9 +50,10 @@ or both together. Their issue links are stored separately and are not migrated b
 
 **Organization integration.** A Gitea provider for Sentry's integrations directory:
 
-- OAuth install and choice of owner (your namespace or an org you own). Create issues with a
-  repository picker that is remembered per project, plus labels and assignee. Link issues by number or
-  title search, with an optional backlink comment. Unlink issues.
+- OAuth install and choice of owner (your namespace or an org you own). Create issues in one of the
+  selected repositories, plus labels and assignee. The repository picker defaults to the repository last
+  used for the project, then to the one its code mapping points at. Link issues by number or title
+  search, with an optional backlink comment. Unlink issues.
 - Opt-in two-way sync of status and assignee, Sentry notes → Gitea comments, a signed webhook per added
   repository, commit and pull-request import with bounded backfill, release commit ranges, stack-trace
   source links through code mappings, and CODEOWNERS import (email owners only).
@@ -393,11 +394,11 @@ Report vulnerabilities privately: [SECURITY.md](SECURITY.md).
    only some of them leaves web and workers on different versions.
 5. Check that `GET <sentry>/extensions/gitea/ping/` reports the new version.
 
-If a release changes the webhook URL or signing, add each Gitea repository to Sentry again (the same
 `./install.sh` runs `sentry upgrade`, which also fills in data that a new release adds to existing
 installations, such as the owner location shown in the **Link issue** menu. If you restart the services
 without `./install.sh`, run `docker compose run --rm web upgrade --noinput` once.
 
+If a release changes the webhook URL or signing, add each Gitea repository to Sentry again (the same
 `POST /api/0/organizations/<org>/repos/` call): adding an existing repository repairs its hook.
 
 ## Uninstall

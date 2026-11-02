@@ -13,7 +13,9 @@ from urllib.parse import urlencode
 from django.core import signing
 from django.urls import reverse
 from sentry import options
+from sentry.constants import ObjectStatus
 from sentry.integrations.models.external_issue import ExternalIssue
+from sentry.integrations.models.repository_project_path_config import RepositoryProjectPathConfig
 from sentry.integrations.source_code_management.issues import SourceCodeIssueIntegration
 from sentry.locks import locks
 from sentry.models.group import Group
@@ -91,27 +93,42 @@ class GiteaIssues(SourceCodeIssueIntegration):
         self, group: Any, params: Mapping[str, Any], page_number_limit: int | None = None
     ) -> tuple[str, list[tuple[str, str]]]:
         rows = self.issue_repositories(page_number_limit=page_number_limit)
-        choices = {row["full_name"]: row["full_name"] for row in rows}
-        requested = params.get("repo")
-        if not requested and group is not None:
-            requested = self.get_project_defaults(group.project_id).get("repo")
-        if requested and requested not in choices:
-            path, label = self.create_default_repo_choice(requested)
-            choices = {path: label, **choices}
-        selected = requested or next(iter(choices), "")
-        return selected, list(choices.items())
+        choices = [(row["full_name"], row["full_name"]) for row in rows]
+        if requested := params.get("repo"):
+            return requested, self._choices_with(choices, requested)
+        if group is None:
+            return next((path for path, _ in choices), ""), choices
+        if remembered := self.get_project_defaults(group.project_id).get("repo"):
+            try:
+                return remembered, self._choices_with(choices, remembered)
+            except StaleRepository:
+                pass
+        mapped = self._code_mapped_repository(group.project_id, rows)
+        return mapped or next((path for path, _ in choices), ""), choices
+
+    def _choices_with(self, choices: list[tuple[str, str]], path: str) -> list[tuple[str, str]]:
+        # The listing is bounded, so a usable repository can be missing from it.
+        if any(choice == path for choice, _ in choices):
+            return choices
+        return [self.create_default_repo_choice(path), *choices]
+
+    def _code_mapped_repository(self, project_id: int, rows: list[dict[str, Any]]) -> str | None:
+        """The repository of the project's oldest code mapping among the offered ones."""
+        listed = {str(row["id"]): row["full_name"] for row in rows}
+        mapped_ids = (
+            RepositoryProjectPathConfig.objects.filter(
+                project_repository__project_id=project_id,
+                project_repository__repository__integration_id=self.model.id,
+                project_repository__repository__status=ObjectStatus.ACTIVE,
+            )
+            .order_by("id")
+            .values_list("project_repository__repository__external_id", flat=True)
+        )
+        return next((listed[str(i)] for i in mapped_ids if str(i) in listed), None)
 
     def _repository_field(self, group: Any, params: Mapping[str, Any]) -> dict[str, Any]:
         with self._issue_operation():
-            try:
-                default, choices = self.get_repository_choices(group, params, page_number_limit=2)
-            except StaleRepository:
-                if params.get("repo"):
-                    raise
-                # Ignore only an obsolete persisted default, not an explicit user selection, and
-                # select nothing: the user picks a repository instead of silently getting another.
-                _, choices = self.get_repository_choices(None, {}, page_number_limit=2)
-                default = ""
+            default, choices = self.get_repository_choices(group, params, page_number_limit=2)
         return {
             "name": "repo",
             "label": "Repository",
