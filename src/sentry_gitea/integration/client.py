@@ -22,6 +22,7 @@ from sentry.shared_integrations.exceptions import (
 
 from sentry_gitea.api.client import (
     OPERATION_BUDGET,
+    TIMEOUT,
     CommitRange,
     GiteaClient,
     git_ref,
@@ -96,6 +97,14 @@ class GiteaIntegrationClient(RepositoryClient):
     def extend_deadline(self, seconds: float) -> None:
         """Long background operations (release ranges, backfills) get their own budget."""
         self.deadline = time.monotonic() + seconds
+
+    def bound_by(self, deadline: float) -> None:
+        """No request may end after `deadline`, and no token refresh runs: its lock alone may
+        wait 45 s. Bound callers (blame) leave an expired token to the mirror task."""
+        # A request starts only with REQUEST_ALLOWANCE left, but one read may block for the read
+        # timeout after the last deadline check.
+        self.deadline = min(self.deadline, deadline - TIMEOUT[1])
+        self.refresh_attempted = True
 
     def _identity(self) -> Any:
         identity = identity_service.get_identity(filter={"id": self.identity_id})

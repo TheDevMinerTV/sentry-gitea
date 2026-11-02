@@ -255,7 +255,7 @@ def test_git_is_killed_at_its_timeout(tmp_path, mirror):
     url = f"http://127.0.0.1:{listener.getsockname()[1]}/stalled.git"
     started = time.monotonic()
     with pytest.raises(GitError, match="timed out"):
-        GitMirror._git(None, "ls-remote", url, remote=Remote(url, TOKEN), timeout=1)
+        mirror._git(None, "ls-remote", url, remote=Remote(url, TOKEN), timeout=1)
     assert time.monotonic() - started < 5
     listener.close()
 

@@ -8,6 +8,7 @@ progress, which become the mirror only through an atomic rename.
 from __future__ import annotations
 
 import fcntl
+import math
 import os
 import re
 import secrets
@@ -34,20 +35,36 @@ class GitError(Exception):
     pass
 
 
+class MirrorBusy(GitError):
+    pass
+
+
+class BudgetExhausted(GitError):
+    pass
+
+
 @dataclass(frozen=True)
 class Deadline:
+    """A point on the monotonic clock that no git command, lock wait or API call may pass."""
+
     at: float
 
     @classmethod
     def after(cls, seconds: float) -> Deadline:
         return cls(time.monotonic() + seconds)
 
-    def remaining(self) -> float:
-        return max(self.at - time.monotonic(), 0.0)
+    def within(self, seconds: float) -> Deadline:
+        return Deadline(min(self.at, time.monotonic() + seconds))
+
+    def cap(self, seconds: float) -> float:
+        """`seconds`, or the time left if that is less; raises once no time is left."""
+        left = self.at - time.monotonic()
+        if left <= 0:
+            raise BudgetExhausted("The time budget is exhausted.")
+        return min(seconds, left)
 
 
-class MirrorBusy(GitError):
-    pass
+UNBOUNDED = Deadline(math.inf)
 
 
 @dataclass(frozen=True)
@@ -109,9 +126,12 @@ def _is_ref_name(name: str) -> bool:
 
 
 class GitMirror:
-    def __init__(self, path: Path, *, fetch_interval: float = FETCH_INTERVAL) -> None:
+    def __init__(
+        self, path: Path, *, fetch_interval: float = FETCH_INTERVAL, deadline: Deadline = UNBOUNDED
+    ) -> None:
         self.path = path
         self.fetch_interval = fetch_interval
+        self.deadline = deadline
         self._lock_path = path.with_suffix(".lock")
 
     def exists(self) -> bool:
@@ -287,7 +307,7 @@ class GitMirror:
         name, the branches and tags the mirror already tracks (unless pruning) and commits named
         by SHA that the mirror lacks. Refs the remote no longer has, or that pruning does not
         keep, are deleted."""
-        deadline = Deadline.after(timeout)
+        network = self.deadline.within(timeout)
         local = self._local_refs(git_dir)
         shas = {name for name in names if _is_full_sha(name)}
         requested = {
@@ -297,7 +317,7 @@ class GitMirror:
             for qualified in (f"refs/heads/{name}", f"refs/tags/{name}")
         }
         tracked = requested if prune else requested | {r for r in local if _is_named_ref(r)}
-        advertised, head = self._ls_remote(git_dir, remote, ["HEAD", *sorted(tracked)], deadline)
+        advertised, head = self._ls_remote(git_dir, remote, ["HEAD", *sorted(tracked)], network)
         wanted = {ref for ref in tracked if ref in advertised}
         if head is not None and "HEAD" in advertised:
             wanted.add(head)
@@ -305,7 +325,7 @@ class GitMirror:
         refspecs = [f"+{ref}:{ref}" for ref in sorted(wanted)]
         refspecs += [f"+{sha}:refs/commits/{sha}" for sha in missing]
         if refspecs:
-            self._fetch(git_dir, remote, refspecs, deadline)
+            self._fetch(git_dir, remote, refspecs, network)
         keep = wanted | {f"refs/commits/{sha}" for sha in shas}
         if prune:
             stale = local - keep
@@ -324,7 +344,7 @@ class GitMirror:
             remote.url,
             *patterns,
             remote=remote,
-            timeout=deadline.remaining(),
+            timeout=deadline.cap(CLONE_TIMEOUT),
         )
         _raise_for_network(result, "ls-remote", remote)
         advertised: dict[str, str] = {}
@@ -357,7 +377,7 @@ class GitMirror:
             # Auto gc inside a fetch could outlast the fetch's deadline; maintain() runs it.
             config=("gc.auto=0", "maintenance.auto=false"),
             remote=remote,
-            timeout=deadline.remaining(),
+            timeout=deadline.cap(CLONE_TIMEOUT),
         )
         _raise_for_network(result, "fetch", remote)
 
@@ -380,24 +400,24 @@ class GitMirror:
 
     @contextmanager
     def _locked(self, timeout: float = LOCK_TIMEOUT) -> Iterator[None]:
+        wait = Deadline.after(self.deadline.cap(timeout))
         self._lock_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self._lock_path, "a") as handle:
-            deadline = time.monotonic() + timeout
             while True:
                 try:
                     fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
                 except BlockingIOError:
-                    if time.monotonic() >= deadline:
+                    if time.monotonic() >= wait.at:
                         raise MirrorBusy("Timed out waiting for the mirror lock.") from None
-                    time.sleep(0.2)
+                    time.sleep(min(0.2, max(wait.at - time.monotonic(), 0.0)))
             try:
                 yield
             finally:
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
-    @staticmethod
     def _git(
+        self,
         git_dir: Path | None,
         *args: str,
         config: Collection[str] = (),
@@ -405,6 +425,7 @@ class GitMirror:
         remote: Remote | None = None,
         timeout: float = LOCAL_TIMEOUT,
     ) -> subprocess.CompletedProcess[str]:
+        timeout = self.deadline.cap(timeout)
         argv = [
             "git",
             "-c",

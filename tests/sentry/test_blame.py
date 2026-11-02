@@ -1,8 +1,11 @@
 """Blame-based suspect commits from local mirrors, against a real repository served over HTTP."""
 
+import fcntl
 import functools
+import json
 import os
 import tempfile
+import time
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -21,16 +24,57 @@ from sentry.integrations.utils.commit_context import find_commit_context_for_eve
 from sentry.models.commit import Commit
 from sentry.models.groupowner import GroupOwner, GroupOwnerType
 from sentry.tasks import post_process
-from sentry.tasks.commit_context import process_commit_context
+from sentry.tasks.commit_context import TASK_DURATION_S, process_commit_context
 from sentry.testutils.silo import no_silo_test
 from sync_fixtures import WEBHOOK_REPO, SyncFixture
 
+from sentry_gitea import mirror as mirror_module
+from sentry_gitea.api import client as api_client_module
+from sentry_gitea.api.client import TIMEOUT
+from sentry_gitea.integration import client as integration_client_module
+from sentry_gitea.integration.blame import BLAME_BUDGET
 from sentry_gitea.integration.provider import GiteaIntegrationProvider
 from sentry_gitea.integration.repository import GiteaRepositoryProvider
 from sentry_gitea.integration.tasks import mirror_repository
-from sentry_gitea.mirror import FETCHED_STAMP, mirror_path
+from sentry_gitea.mirror import FETCHED_STAMP, LOCK_TIMEOUT, mirror_path
 
 TOKEN = "synthetic-integration-access"
+
+
+class SlowClock:
+    """A monotonic clock that the slow fakes below move forward instead of really waiting."""
+
+    def __init__(self):
+        self.now = 1000.0
+        self.slept = 0.0
+        self.on_sleep = lambda: None
+
+    def monotonic(self):
+        return self.now
+
+    def time(self):
+        return time.time()
+
+    def sleep(self, seconds):
+        self.now += seconds
+        self.slept += seconds
+        self.on_sleep()
+
+
+class SlowGit:
+    """Runs git for real, then takes every second its timeout allows, as a hanging git would."""
+
+    def __init__(self, process, clock):
+        self.process = process
+        self.clock = clock
+
+    def communicate(self, input=None, timeout=None):
+        output = self.process.communicate(input)
+        self.clock.now += timeout
+        return output
+
+    def __getattr__(self, name):
+        return getattr(self.process, name)
 
 
 def blame_settings(test):
@@ -327,3 +371,97 @@ class TestBlame(SyncFixture):
         assert sorted(listed) == ["refs/heads/main", "refs/tags/v1"]
         blamed = self.installation.get_blame_for_files([self.line(1, ref="v1")], extra={})
         assert [b.commit.commitId for b in blamed] == [first]
+
+    def worst_case_blame_seconds(self, refs):
+        """Blame `refs` while every step takes all the time it is allowed: each git command its
+        full timeout, the lock its full wait, the API lookup its connect and read timeouts."""
+        self.mock_lookup()
+        with self.tasks():
+            self.installation.get_blame_for_files([self.line(2)], extra={})
+        path = mirror_path(self.mirrors, self.integration.id, 41)
+        os.utime(path / FETCHED_STAMP, (0, 0))
+        clock = SlowClock()
+
+        def slow_lookup(request):
+            clock.now += sum(TIMEOUT)
+            return 200, {}, json.dumps(WEBHOOK_REPO)
+
+        lookup = self.server.url + "/api/v1/repositories/41"
+        responses.remove(responses.GET, lookup)
+        responses.add_callback(responses.GET, lookup, callback=slow_lookup)
+        holder = open(path.with_suffix(".lock"), "a")
+        self.addCleanup(holder.close)
+        fcntl.flock(holder, fcntl.LOCK_EX)
+
+        def release_at_the_last_moment():
+            if clock.slept >= LOCK_TIMEOUT - 0.5:
+                fcntl.flock(holder, fcntl.LOCK_UN)
+
+        clock.on_sleep = release_at_the_last_moment
+        spawn = mirror_module._spawn
+        files = [self.line(1, ref=ref) for ref in refs]
+        files += [self.line(line, path=name) for name in ("app.py", "b.py") for line in (1, 3)]
+        with (
+            patch.object(mirror_module, "time", clock),
+            patch.object(api_client_module, "time", clock),
+            patch.object(integration_client_module, "time", clock),
+            patch.object(mirror_module, "_spawn", lambda *a: SlowGit(spawn(*a), clock)),
+            patch("sentry_gitea.integration.tasks.mirror_repository.delay"),
+        ):
+            started = clock.now
+            self.installation.get_blame_for_files(files, extra={})
+            return clock.now - started
+
+    @responses.activate
+    @blame_settings
+    def test_a_slow_lock_lookup_and_fetch_end_within_the_blame_budget(self):
+        elapsed = self.worst_case_blame_seconds(["main"])
+        assert BLAME_BUDGET - 1 <= elapsed <= BLAME_BUDGET < TASK_DURATION_S
+
+    @responses.activate
+    @blame_settings
+    def test_a_lookup_that_starts_late_cannot_outlast_the_blame_budget(self):
+        # Two slow local reads and the lock wait leave too little time for the lookup.
+        elapsed = self.worst_case_blame_seconds(["1" * 40, "2" * 40, "main"])
+        assert 20 < elapsed <= BLAME_BUDGET
+
+    @responses.activate
+    @blame_settings
+    def test_local_reads_stop_at_the_blame_budget(self):
+        elapsed = self.worst_case_blame_seconds([str(digit) * 40 for digit in range(1, 6)])
+        assert BLAME_BUDGET - 1 <= elapsed <= BLAME_BUDGET
+
+    @responses.activate
+    @blame_settings
+    def test_the_lock_wait_stops_at_the_blame_budget(self):
+        elapsed = self.worst_case_blame_seconds([str(digit) * 40 for digit in range(1, 5)])
+        assert BLAME_BUDGET - 1 <= elapsed <= BLAME_BUDGET
+
+    @responses.activate
+    @blame_settings
+    def test_the_mirror_task_refreshes_an_expired_token(self):
+        # Blame never refreshes tokens; the task it queues after a 401 must be able to.
+        self.identity.update(
+            external_id=f"{self.server.url}|2",
+            data={
+                **self.identity.data,
+                "access_token": "expired",
+                "expires": int(time.time()) - 60,
+            },
+        )
+
+        def lookup(request):
+            if request.headers.get("Authorization") != f"Bearer {TOKEN}":
+                return 401, {}, json.dumps({"message": "token expired"})
+            return 200, {}, json.dumps(WEBHOOK_REPO)
+
+        responses.add_callback(
+            responses.GET, self.server.url + "/api/v1/repositories/41", callback=lookup
+        )
+        responses.post(
+            self.server.url + "/login/oauth/access_token",
+            json={"access_token": TOKEN, "refresh_token": "rotated", "expires_in": 3600},
+        )
+        mirror_repository(repository_id=self.repo.id)
+        assert mirror_path(self.mirrors, self.integration.id, 41).is_dir()
+        assert set(self.server.authorizations) == {f"Bearer {TOKEN}"}

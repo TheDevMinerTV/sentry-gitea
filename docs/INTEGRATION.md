@@ -465,10 +465,16 @@ in logs. Git runs with prompts, system and global configuration and hooks disabl
 `http.followRedirects=false`: git would send the header to wherever Gitea redirects, so a redirect
 fails the clone or fetch instead. Gitea answers the URL built from the API's `full_name` without a
 redirect. Timeouts kill
-git and its helper processes: 10 seconds for a local command, 30 seconds for a fetch during blame,
-25 minutes for a clone. One blame request stops starting git commands after 45 seconds, inside
-Sentry's 90-second task deadline. A fetch that fails during blame queues the mirror task, which
-fetches again with the clone's time limit. A file lock next to each mirror (`<id>.lock`, kept after
+git and its helper processes: 10 seconds for a local command, 30 seconds for a fetch during blame
+(`ls-remote` and `fetch` together), 25 minutes for a clone. One blame request has a hard budget of
+45 seconds, half of Sentry's 90-second commit-context deadline, which other providers' blame in the
+same task shares. Every step checks the time left first and gets the smaller of its own limit and
+that time: each git command, the wait for the mirror lock (at most 10 seconds) and the Gitea API
+lookup of the repository, which must also be able to finish its last 15-second read in time.
+Blame never refreshes the OAuth token, whose lock alone can wait 45 seconds. When the budget runs
+out, blame returns what it found so far. A fetch that fails or runs out of time during blame, or an
+expired token, queues the mirror task, which fetches again with the clone's time limit and
+refreshes the token if needed. A file lock next to each mirror (`<id>.lock`, kept after
 deletion) serializes clone, fetch and delete across processes. A clone goes to a temporary
 directory and becomes the mirror through an atomic rename, so an interrupted clone never looks like
 a mirror; the next clone removes its leftovers.
