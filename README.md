@@ -50,9 +50,10 @@ or both together. Their issue links are stored separately and are not migrated b
 
 **Organization integration.** A Gitea provider for Sentry's integrations directory:
 
-- OAuth install and choice of owner (your namespace or an org you own). Create issues with a
-  repository picker that is remembered per project, plus labels and assignee. Link issues by number or
-  title search, with an optional backlink comment. Unlink issues.
+- OAuth install and choice of owner (your namespace or an org you own). Create issues in one of the
+  selected repositories, plus labels and assignee. The repository picker defaults to the repository last
+  used for the project, then to the one its code mapping points at. Link issues by number or title
+  search, with an optional backlink comment. Unlink issues.
 - Opt-in two-way sync of status and assignee, Sentry notes → Gitea comments, a signed webhook per added
   repository, commit and pull-request import with bounded backfill, release commit ranges, stack-trace
   source links through code mappings, and CODEOWNERS import (email owners only).
@@ -81,7 +82,7 @@ or both together. Their issue links are stored separately and are not migrated b
 | Blame / commit-context suspect commits | No | Opt-in (`GITEA_BLAME_ENABLED`), `git blame` on local mirrors |
 | Pull-request comment bot | No | **Not supported** |
 | Alert-rule "create ticket" action | n/a | **Not supported** |
-| Gitea name and icon in Sentry's UI | n/a | **Not supported** (blank name, generic icon) |
+| Gitea name and icon in Sentry's UI | n/a | **Not supported** (blank name, generic icon; the issue menu shows the owner's location) |
 | Sentry SaaS, or control/cell (hybrid cloud) deployments | **Not supported** | **Not supported** |
 
 ### Limitations
@@ -98,7 +99,8 @@ or both together. Their issue links are stored separately and are not migrated b
 - **Comments made in Gitea are not imported** into Sentry.
 - **The Gitea provider shows up with a blank name and a generic icon** in parts of Sentry's
   prebuilt frontend, such as the issue sidebar. Those mappings are compiled into the frontend and a
-  Python package cannot change them. Backend forms and APIs work normally.
+  Python package cannot change them. The **Link issue** menu shows the owner's location, such as
+  `gitea.example/team`, under the blank name. Backend forms and APIs work normally.
 - **One Gitea instance and OAuth app per Sentry deployment** for the integration. The plugins can point
   each project at any allowed Gitea URL. There is no PAT fallback for the integration, and no migration
   of links between the plugins and the integration.
@@ -239,8 +241,8 @@ Details, label colors, recovery semantics and logging: [docs/PLUGINS.md](docs/PL
    - **Repositories:** Sentry 26.10 has no Add Repository form. Its repository sync imports the
      installed owner's **selected** repositories that the authorizing user administers. The install
      picker stores the selection; change it later in the integration's settings under
-     **Repositories**. Saving it starts a sync. A reinstall shows the picker with the current
-     selection ticked and removes only the repositories you untick there. Installations made before the picker existed have no
+     **Repositories**. Saving it starts a sync. Issue forms offer only the selected repositories.
+     A reinstall shows the picker with the current selection ticked and removes only the repositories you untick there. Installations made before the picker existed have no
      stored selection and import every repository, as before. To sync again, go to
      **Organization Settings → Repositories**, hover the Gitea owner's repository count and click
      **Sync now**, or wait for Sentry's daily sync. Removing a repository from the selection deletes
@@ -391,6 +393,10 @@ Report vulnerabilities privately: [SECURITY.md](SECURITY.md).
 4. Rebuild the images and recreate **all** Sentry services, for example with `./install.sh`. Restarting
    only some of them leaves web and workers on different versions.
 5. Check that `GET <sentry>/extensions/gitea/ping/` reports the new version.
+
+`./install.sh` runs `sentry upgrade`, which also fills in data that a new release adds to existing
+installations, such as the owner location shown in the **Link issue** menu. If you restart the services
+without `./install.sh`, run `docker compose run --rm web upgrade --noinput` once.
 
 If a release changes the webhook URL or signing, add each Gitea repository to Sentry again (the same
 `POST /api/0/organizations/<org>/repos/` call): adding an existing repository repairs its hook.

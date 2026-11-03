@@ -156,6 +156,15 @@ def browser_issue_url(
     return f"{base}/{path}/issues/{issue_number(number)}"
 
 
+def owner_domain_name(public_url: str, owner_login: str) -> str:
+    """The owner's Gitea location as Sentry shows an integration's `domain_name`, such as
+    `gitea.example/team`, the way GitHub's is `github.com/<owner>`."""
+    base = normalize_base_url(public_url)
+    owner = normalize_repo(f"{owner_login}/namespace").split("/")[0]
+    # Sentry's settings page links a domain name without a scheme as https://.
+    return f"{base.removeprefix('https://')}/{owner}"
+
+
 def label_color(name: str) -> str:
     if name.startswith("source:"):
         return "#5319e7"

@@ -1,6 +1,6 @@
 import pytest
 
-from sentry_gitea.api.client import browser_issue_url
+from sentry_gitea.api.client import browser_issue_url, owner_domain_name
 
 
 class TestBrowserIssueUrl:
@@ -53,3 +53,15 @@ class TestBrowserIssueUrl:
     def test_rejects_invalid_issue_paths(self, repo, number):
         with pytest.raises(ValueError):
             browser_issue_url("https://forge.example", repo, number)
+
+
+def test_owner_domain_name_drops_only_the_https_scheme():
+    assert owner_domain_name("https://gitea.example/", "team") == "gitea.example/team"
+    assert owner_domain_name("https://Gitea.Example:8443/git/", "team") == (
+        "gitea.example:8443/git/team"
+    )
+    # Sentry would link a scheme-less name over HTTPS, which a plain-HTTP Gitea does not serve.
+    assert owner_domain_name("http://gitea:3000", "team") == "http://gitea:3000/team"
+    for login in ["", "a/b", "../x"]:
+        with pytest.raises(ValueError):
+            owner_domain_name("https://gitea.example", login)

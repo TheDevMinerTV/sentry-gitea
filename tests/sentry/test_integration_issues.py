@@ -298,8 +298,7 @@ class TestIntegrationIssues(IntegrationFixture):
             {"project_issue_defaults": {str(self.project.id): {"repo": "team/old"}}}
         )
         fields = self.installation.get_create_issue_config(self.group, self.user)
-        # Nothing is selected in place of the stale default: the user picks a repository.
-        assert fields[0]["default"] == ""
+        assert fields[0]["default"] == "team/repo"
         assert fields[0]["choices"] == [("team/repo", "team/repo")]
 
     @responses.activate
@@ -322,11 +321,11 @@ class TestIntegrationIssues(IntegrationFixture):
                 form = self.client.get(self.issue_endpoint(), {"action": "create"})
                 assert form.status_code == 200, form.data
                 [repo] = [f for f in form.data["createIssueConfig"] if f["name"] == "repo"]
-                assert repo["default"] == ""
+                assert repo["default"] == "team/repo"
                 assert [list(choice) for choice in repo["choices"]] == [["team/repo", "team/repo"]]
                 link = {f["name"]: f for f in self.installation.get_link_issue_config(self.group)}
-                assert link["repo"]["default"] == ""
-                assert link["externalIssue"]["url"].endswith("?repo=")
+                assert link["repo"]["default"] == "team/repo"
+                assert link["externalIssue"]["url"].endswith("?repo=team%2Frepo")
                 # An explicit selection is still validated and reported.
                 with self.assertRaises(IntegrationError):
                     self.installation.get_create_issue_config(

@@ -40,9 +40,8 @@ class GiteaSearchEndpoint(SourceCodeSearchEndpoint):
         self, integration: Any, installation: GiteaIntegration, query: str
     ) -> Response:
         try:
-            # Issue forms list only repositories with Gitea's built-in issue tracker.
             with installation._issue_operation():
-                repos = installation.get_client().search_repositories(query, page_number_limit=2)
+                repos = installation.issue_repositories(query, page_number_limit=2)
             return Response(
                 [{"label": repo["full_name"], "value": repo["full_name"]} for repo in repos]
             )

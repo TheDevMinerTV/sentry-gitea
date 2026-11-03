@@ -160,11 +160,16 @@ From a Sentry issue's integration actions, select the installed Gitea owner:
 
 - **Create:** choose an owner/name repository, edit the generated title and description, optionally
   enter comma-separated labels and an assignee's Gitea username. Missing labels are created and their
-  numeric IDs are submitted. The repository selection is remembered per Sentry project. If the
-  remembered repository is no longer usable (deleted, moved, transferred to another owner, no
-  longer accessible, or with issues disabled or moved to an external tracker), the form opens with
-  no repository selected.
-- **Link:** choose a repository and search by issue number (`12` or `#12`) or title text. Pull requests
+  numeric IDs are submitted. The form offers the selected repositories that have Gitea's built-in
+  issue tracker (see [Repository selection](#repository-selection)). It preselects, in this order:
+  1. the repository last used to create or link an issue for this Sentry project, if it is still
+     selected and usable (not deleted, moved, transferred to another owner, inaccessible, or with
+     issues disabled or moved to an external tracker);
+  2. the repository of the project's oldest code mapping through this installation that the form
+     offers;
+  3. the first repository the form offers.
+- **Link:** choose a repository and search by issue number (`12` or `#12`) or title text. The
+  repository choices and the preselected repository are the same as for **Create**. Pull requests
   are excluded. The optional comment defaults to the Sentry issue URL and includes a hidden
   `<!-- sentry-gitea-link <group ID> -->` marker. Leave the comment blank to omit the backlink.
   The form carries signed context so editing the comment preserves its marker. Retries check existing
@@ -224,9 +229,14 @@ GET /extensions/gitea/search/<organization_id_or_slug>/<integration_id>/?field=e
 ```
 
 Both return lists of `{label, value}` objects and require normal Sentry organization membership and
-access to the installation. Missing/blank queries and unsupported fields return 400, as required by
-Sentry's search base. Selectors are bounded to two pages of 50 results; narrow the search to find more.
-Wrong-owner repository selections are rejected even if the OAuth user has access to them.
+access to the installation. Repository choices are limited to the selection. Missing/blank
+queries and unsupported fields return 400, as required by Sentry's search base. Selectors are bounded to two pages of 50 results; narrow the search to find more.
+With a stored selection, forms and the repository search read up to 20 pages, so that selected
+repositories that sort after the first 100 are offered too.
+Wrong-owner repository selections are rejected even if the OAuth user has access to them. So are
+repositories outside the selection: creating an issue, linking one, searching its issues and opening
+a form for it answer 400 with `Select a repository from the Gitea integration's repository
+selection.` Issues linked before a repository left the selection stay linked.
 
 ## Repositories and webhooks
 
@@ -274,8 +284,9 @@ only disables repositories the provider stops listing, keeps those with activity
 days, and re-enables a disabled repository without its hook. Selecting the repository again imports
 a new row with a new hook at once, even before the old row's deletion runs.
 
-The selection does not limit issue forms: any repository of the installed owner can still be used to
-create and link issues.
+The selection also limits issue forms and the repository search: only selected repositories can be
+used to create and link issues (see [Create and link issues](#create-and-link-issues)). An
+installation without a stored selection offers every repository of the owner.
 
 #### Reinstalling
 
@@ -559,8 +570,16 @@ Not supported:
 
 Sentry's prebuilt frontend has fixed provider-name/icon mappings. **The issue sidebar can show
 a blank provider name and a generic icon for Gitea.** The backend catalog and generic forms still use
-the registered provider. Python package installation cannot add a branded entry to those frontend
-mappings or to fixed source-code-management provider filters.
+the registered provider. The **Link issue** menu shows each installation's `domain_name` under that
+blank name, and the owner name too when the menu offers several Gitea owners. The integration stores
+`domain_name` as `<GITEA_PUBLIC_URL without https://>/<owner>`, for example `gitea.example/team`;
+with a plain-HTTP URL it keeps the `http://` scheme, because the integration's settings page links a
+`domain_name` without a scheme over HTTPS. Install and reinstall set it. `sentry upgrade`, which
+self-hosted's `install.sh` runs, sets it for installations made before this release, from the
+public URL and owner stored at install time; it does not contact Gitea. With `SKIP_SENTRY_MIGRATIONS`
+set, `install.sh` skips `sentry upgrade`; run `docker compose run --rm web upgrade --noinput` then.
+Python package installation cannot add a branded entry to those frontend mappings or to fixed
+source-code-management provider filters.
 
 Legacy plugin links are separate from modern integration links. To move a project, explicitly link
 its existing Gitea issues through this integration and disable any duplicate legacy automatic filing.
@@ -574,7 +593,8 @@ Our logs use `sentry_gitea.integration.*` and the prefixes `sentry-gitea: instal
 `sentry-gitea: webhook rejected` (with `reason` `url`, `integration`, `signature`, `payload` or
 `repository`), `sentry-gitea: webhook ignored`, `sentry-gitea: backfill incomplete` and
 `sentry-gitea: sync failed` (with `operation`), `sentry-gitea: blame failed` (with `operation`) and
-`sentry-gitea: blame skipped, mirror not ready` (INFO).
+`sentry-gitea: blame skipped, mirror not ready` (INFO), and `sentry-gitea: domain name backfill
+skipped` (with `integration_id`) and `sentry-gitea: domain name backfill failed` from `sentry upgrade`.
 Diagnostic extras contain IDs, status and error type; they omit request and response bodies,
 tokens, authorization codes, state, verifiers and secrets.
 
