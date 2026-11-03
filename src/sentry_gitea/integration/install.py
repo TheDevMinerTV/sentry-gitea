@@ -7,11 +7,12 @@ from typing import Any
 
 from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, HttpResponse, HttpResponseBase
-from django.utils.html import format_html, format_html_join
 from django.views.decorators.http import require_GET
 from sentry.integrations.pipeline import IntegrationPipeline
 from sentry.models.organization import Organization
 from sentry.web.helpers import render_to_response
+
+from .pages import render_page
 
 
 class GiteaIntegrationPipeline(IntegrationPipeline):
@@ -29,26 +30,6 @@ def _error(request: HttpRequest, message: str, status: int) -> HttpResponse:
     )
 
 
-def _organization_choice(organizations: Sequence[Organization]) -> HttpResponse:
-    options = format_html_join(
-        "",
-        '<option value="{}">{}</option>',
-        ((organization.slug, organization.name) for organization in organizations),
-    )
-    response = HttpResponse(
-        format_html(
-            '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-            "<title>Install Gitea</title></head><body><h1>Choose a Sentry organization</h1>"
-            '<form method="get"><label for="organization">Organization</label>'
-            '<select name="organization" id="organization" required>{}</select>'
-            '<button type="submit">Continue</button></form></body></html>',
-            options,
-        )
-    )
-    response["Cache-Control"] = "no-store"
-    return response
-
-
 @require_GET
 @login_required
 def install(request: HttpRequest) -> HttpResponseBase:
@@ -60,7 +41,7 @@ def install(request: HttpRequest) -> HttpResponseBase:
     slug = request.GET.get("organization")
     chosen = [o for o in organizations if o.slug == slug] if slug else organizations
     if len(chosen) != 1:
-        return _organization_choice(organizations)
+        return render_page(request, "organization-choice.html", {"organizations": organizations})
     pipeline = GiteaIntegrationPipeline(
         request=request, organization=chosen[0], provider_key="gitea"
     )

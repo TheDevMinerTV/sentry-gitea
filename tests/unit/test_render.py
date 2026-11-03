@@ -23,6 +23,10 @@ from sentry_gitea.render import (
 )
 
 
+def marked_body(event):
+    return ensure_metadata(render_body(event), event)
+
+
 @pytest.fixture
 def event():
     return EventData(
@@ -113,8 +117,13 @@ def test_title_is_recognizable_single_line_nonempty_and_bounded(event):
     assert "\n" not in render_title(replace(event, title="one\ntwo"))
 
 
+def test_form_default_body_carries_no_metadata_marker(event):
+    assert "sentry-gitea-meta" not in render_body(event)
+    assert parse_metadata(render_body(event)) is None
+
+
 def test_body_contract_and_metadata(event):
-    body = render_body(event)
+    body = marked_body(event)
     for value in [
         event.issue_url,
         "error",
@@ -167,7 +176,7 @@ def test_comment_contains_event_url_and_marker(event):
 def test_text_and_metadata_escape_delimiters_and_controls(event):
     malicious = "a -->\n<!-- injected -->\x00 **bold** [link](https://bad)"
     data = replace(event, release=malicious, title=malicious, culprit=malicious)
-    body = render_body(data)
+    body = marked_body(data)
     assert body.count("<!--") == 1
     assert body.count("-->") == 1
     assert "\x00" not in body
@@ -242,7 +251,7 @@ def test_code_span_flattens_controls_and_neutralizes_comment_delimiters():
 
 def test_planted_marker_in_event_text_cannot_alias_another_group(event):
     other = '<!-- sentry-gitea-meta v1 {"source":"sentry","dedup_id":"https://s/1/999"} -->'
-    body = render_body(replace(event, title=other, culprit=other))
+    body = marked_body(replace(event, title=other, culprit=other))
     assert parse_metadata(body, dedup_id="https://s/1/999") is None
     assert parse_metadata(body)["dedup_id"] == event.dedup_id
 
@@ -260,8 +269,24 @@ def test_fix_hint_commit_subjects_cannot_mention(event):
     assert code_span("@alice fixes #3 via https://evil.example") in hint
 
 
+def test_stripping_a_marker_cannot_reassemble_a_forged_one(event):
+    forged = '{"source":"sentry","dedup_id":"https://s/1/999"}'
+    inner = '<!-- sentry-gitea-meta v1 {"source":"sentry","dedup_id":"x"} -->'
+    body = f"Edited <!-{inner}- sentry-gitea-meta v1 {forged} --> text"
+    updated = ensure_metadata(body, event)
+    assert parse_metadata(updated, dedup_id="https://s/1/999") is None
+    assert parse_metadata(updated, dedup_id="x") is None
+    assert updated.count("sentry-gitea-meta") == 1
+    assert parse_metadata(updated)["dedup_id"] == event.dedup_id
+
+
+def test_empty_body_gets_only_the_marker(event):
+    assert ensure_metadata("", event) == ensure_metadata("  \n", event)
+    assert ensure_metadata("", event).startswith("<!-- sentry-gitea-meta v1 ")
+
+
 def test_edited_body_retains_prose_and_gets_authoritative_marker(event):
-    body = "Human edits\n\n" + render_body(replace(event, group_id=999))
+    body = "Human edits\n\n" + marked_body(replace(event, group_id=999))
     updated = ensure_metadata(body, event)
     assert updated.startswith("Human edits")
     assert updated.count("<!-- sentry-gitea-meta") == 1
@@ -283,7 +308,7 @@ def test_malformed_or_foreign_metadata_ignored(body):
 
 
 def test_metadata_is_single_line_json(event):
-    line = render_body(replace(event, release="first\nsecond")).splitlines()[-1]
+    line = marked_body(replace(event, release="first\nsecond")).splitlines()[-1]
     assert json.loads(line.removeprefix("<!-- sentry-gitea-meta v1 ").removesuffix(" -->"))
 
 
@@ -342,19 +367,19 @@ def test_label_input_limits(value):
 
 def test_recurrence_line_and_metadata_only_when_replacing_a_closed_issue(event):
     assert "Recurrence of" not in render_body(event)
-    assert "recurrence_of" not in parse_metadata(render_body(event))
+    assert "recurrence_of" not in parse_metadata(marked_body(event))
     refiled = replace(event, recurrence_of="7", recurrence_closed="2026-05-23")
-    body = render_body(refiled)
+    body = marked_body(refiled)
     assert "**Recurrence of:** #7 (closed 2026-05-23)" in body
     # Right after the Sentry link, before the event details.
     assert body.index("Recurrence of") < body.index("**Level:**")
     assert parse_metadata(body)["recurrence_of"] == "7"
-    assert parse_metadata(body)["dedup_id"] == parse_metadata(render_body(event))["dedup_id"]
+    assert parse_metadata(body)["dedup_id"] == parse_metadata(marked_body(event))["dedup_id"]
 
 
 @pytest.mark.parametrize("number", ["0", "07", "-7", "7a", "#7", "7 @admin", "1" * 20, ""])
 def test_recurrence_number_must_be_plain_digits(event, number):
-    body = render_body(replace(event, recurrence_of=number, recurrence_closed="2026-05-23"))
+    body = marked_body(replace(event, recurrence_of=number, recurrence_closed="2026-05-23"))
     assert "Recurrence of" not in body
     assert "recurrence_of" not in parse_metadata(body)
 

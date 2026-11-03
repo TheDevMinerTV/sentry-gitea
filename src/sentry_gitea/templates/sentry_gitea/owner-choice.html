@@ -1,0 +1,26 @@
+{% extends "sentry/bases/modal.html" %}
+
+{% block wrapperclass %}narrow auth{% endblock %}
+{% block modal_header_signout %}{% endblock %}
+{% block title %}Install Gitea | {{ block.super }}{% endblock %}
+
+{% block main %}
+<h3>Choose a Gitea owner</h3>
+<p>Connect your own namespace or an organization you own.</p>
+<form action="{{ action }}" method="post" class="form-stacked">
+  {% csrf_token %}
+  <div class="form-group">
+    <label for="owner" class="control-label">Owner</label>
+    <div class="controls">
+      <select name="owner" id="owner" class="form-control" required>
+        {% for owner in owners %}
+        <option value="{{ owner.kind }}:{{ owner.id }}">{{ owner.login }} ({{ owner.kind }})</option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+  <fieldset class="form-actions">
+    <button type="submit" class="btn btn-primary">Install Gitea</button>
+  </fieldset>
+</form>
+{% endblock %}

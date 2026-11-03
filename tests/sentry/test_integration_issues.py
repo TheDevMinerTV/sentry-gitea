@@ -14,6 +14,8 @@ from sentry.testutils.silo import no_silo_test
 from sync_fixtures import gitea_comment, gitea_user
 from test_integration_provider import API, BASE, PUBLIC, REPO, TOKEN, IntegrationFixture
 
+from sentry_gitea.render import parse_metadata
+
 ISSUES = API + "/repos/team/repo/issues"
 MALLORY = gitea_user(99, "mallory")
 
@@ -24,6 +26,18 @@ def marker(dedup_id):
 
 def posts(suffix):
     return [c for c in responses.calls if c.request.method == "POST" and c.request.url == suffix]
+
+
+def posted_bodies(suffix):
+    return [json.loads(c.request.body)["body"] for c in posts(suffix)]
+
+
+def marker_searches():
+    return [
+        parse_qs(urlsplit(c.request.url).query)["q"]
+        for c in responses.calls
+        if c.request.method == "GET" and c.request.url.startswith(ISSUES + "?")
+    ]
 
 
 @no_silo_test
@@ -37,6 +51,14 @@ class TestIntegrationIssues(IntegrationFixture):
         latest.start()
         self.addCleanup(latest.stop)
 
+    def dedup_id(self):
+        return self.installation._event_data(self.group, None).dedup_id
+
+    def create_fields(self):
+        return {
+            f["name"]: f for f in self.installation.get_create_issue_config(self.group, self.user)
+        }
+
     @responses.activate
     def test_create_form_and_create_real_endpoint_then_unlink(self):
         self.mock_repo()
@@ -45,7 +67,9 @@ class TestIntegrationIssues(IntegrationFixture):
         assert form.status_code == 200, form.data
         fields = {f["name"]: f for f in form.data["createIssueConfig"]}
         assert {"repo", "title", "description", "labels", "assignee"} <= fields.keys()
-        assert "sentry-gitea-meta" in fields["description"]["default"]
+        assert "sentry-gitea-meta" not in fields["description"]["default"]
+        assert fields["createContext"]["type"] == "hidden"
+        responses.get(ISSUES, json=[], headers={"X-Total-Count": "0"})
         responses.get(API + "/repos/team/repo/labels", json=[])
         responses.post(API + "/repos/team/repo/labels", json={"id": 5, "name": "bug"}, status=201)
         responses.post(
@@ -61,6 +85,7 @@ class TestIntegrationIssues(IntegrationFixture):
                 "description": "Editable body",
                 "labels": "bug",
                 "assignee": "alice",
+                "createContext": fields["createContext"]["default"],
             },
         )
         assert result.status_code == 201, result.data
@@ -71,7 +96,9 @@ class TestIntegrationIssues(IntegrationFixture):
         assert external.metadata["url"] == PUBLIC + "/team/repo/issues/7"
         assert self.installation.get_issue_url(external.key) == PUBLIC + "/team/repo/issues/7"
         payload = json.loads(responses.calls[-1].request.body)
-        assert payload["title"] == "Edited title" and payload["body"] == "Editable body"
+        assert payload["title"] == "Edited title"
+        assert payload["body"].startswith("Editable body\n\n<!-- sentry-gitea-meta v1 ")
+        assert parse_metadata(payload["body"])["dedup_id"] == self.dedup_id()
         assert payload["labels"] == [5] and payload["assignees"] == ["alice"]
         self.org_integration.refresh_from_db()
         assert (
@@ -312,16 +339,24 @@ class TestIntegrationIssues(IntegrationFixture):
     @responses.activate
     def test_create_retry_recovers_the_installation_issue_by_marker(self):
         self.mock_repo()
-        dedup = f"https://sentry.example/{self.project.id}/{self.group.id}"
-        body = "Details\n\n" + marker(dedup)
+        responses.get(API + "/repos/search", json={"data": [REPO]}, headers={"X-Total-Count": "1"})
+        context = self.create_fields()["createContext"]["default"]
         responses.get(ISSUES, json=[], headers={"X-Total-Count": "0"})
         responses.get(API + "/repos/team/repo/labels", json=[{"id": 5, "name": "bug"}])
         # Gitea created the issue but dropped its label (no permission): the request fails.
-        responses.post(ISSUES, json=self.remote_issue(body=body, labels=[]), status=201)
-        data = {"repo": "team/repo", "title": "Title", "description": body, "labels": "bug"}
+        responses.post(ISSUES, json=self.remote_issue(labels=[]), status=201)
+        data = {
+            "repo": "team/repo",
+            "title": "Title",
+            "description": "Details",
+            "labels": "bug",
+            "createContext": context,
+        }
         failed = self.client.post(self.issue_endpoint(), data)
         assert failed.status_code == 400, failed.data
         assert not ExternalIssue.objects.filter(integration_id=self.integration.id).exists()
+        [body] = posted_bodies(ISSUES)
+        assert parse_metadata(body)["dedup_id"] == self.dedup_id()
         # The retry finds the issue the installation filed instead of opening a duplicate.
         responses.replace(
             responses.GET,
@@ -333,29 +368,121 @@ class TestIntegrationIssues(IntegrationFixture):
         assert retried.status_code == 201, retried.data
         assert retried.data["key"] == "41#7"
         assert len(posts(ISSUES)) == 1
-        search = [c for c in responses.calls if c.request.method == "GET" and "q=" in c.request.url]
-        assert parse_qs(urlsplit(search[-1].request.url).query)["q"] == [dedup]
+        assert marker_searches()[-1] == [self.dedup_id()]
+
+    @responses.activate
+    def test_double_submit_of_the_create_form_files_one_issue(self):
+        self.mock_repo()
+        responses.get(API + "/repos/search", json={"data": [REPO]}, headers={"X-Total-Count": "1"})
+        fields = self.create_fields()
+        responses.get(ISSUES, json=[], headers={"X-Total-Count": "0"})
+
+        def file_issue(request):
+            body = json.loads(request.body)["body"]
+            # Gitea now finds the filed issue by its marker.
+            responses.replace(
+                responses.GET,
+                ISSUES,
+                json=[self.remote_issue(body=body)],
+                headers={"X-Total-Count": "1"},
+            )
+            return 201, {}, json.dumps(self.remote_issue(body=body))
+
+        responses.add_callback(responses.POST, ISSUES, callback=file_issue)
+        data = {
+            "repo": "team/repo",
+            "title": fields["title"]["default"],
+            "description": fields["description"]["default"],
+            "createContext": fields["createContext"]["default"],
+        }
+        first = self.client.post(self.issue_endpoint(), data)
+        assert first.status_code == 201, first.data
+        self.client.post(self.issue_endpoint(), data)
+        [body] = posted_bodies(ISSUES)
+        assert body.startswith(fields["description"]["default"])
+        assert parse_metadata(body)["dedup_id"] == self.dedup_id()
+        assert ExternalIssue.objects.filter(integration_id=self.integration.id).count() == 1
+
+    @responses.activate
+    def test_edited_description_cannot_forge_or_drop_the_dedup_marker(self):
+        self.mock_repo()
+        responses.get(API + "/repos/search", json={"data": [REPO]}, headers={"X-Total-Count": "1"})
+        context = self.create_fields()["createContext"]["default"]
+        other = self.create_group(project=self.project)
+        forged = self.installation._event_data(other, None).dedup_id
+        responses.get(ISSUES, json=[], headers={"X-Total-Count": "0"})
+        responses.post(ISSUES, json=self.remote_issue(), status=201)
+        for description in ["", "Rewritten", "Rewritten\n\n" + marker(forged)]:
+            with self.subTest(description=description):
+                responses.calls.reset()
+                self.installation.create_issue(
+                    {
+                        "repo": "team/repo",
+                        "title": "Title",
+                        "description": description,
+                        "createContext": context,
+                    }
+                )
+                [body] = posted_bodies(ISSUES)
+                assert parse_metadata(body, dedup_id=forged) is None
+                assert parse_metadata(body)["dedup_id"] == self.dedup_id()
+                assert marker_searches() == [[self.dedup_id()]]
+
+    @responses.activate
+    def test_tampered_or_foreign_create_context_is_rejected_before_gitea(self):
+        self.mock_repo()
+        responses.get(API + "/repos/search", json={"data": [REPO]}, headers={"X-Total-Count": "1"})
+        context = self.create_fields()["createContext"]["default"]
+        link_context = {f["name"]: f for f in self.installation.get_link_issue_config(self.group)}[
+            "linkContext"
+        ]["default"]
+        other_org = self.create_organization(owner=self.user)
+        foreign = self.integration.get_installation(other_org.id)
+        cases = [
+            (self.installation, context + "x"),
+            (self.installation, link_context),
+            (self.installation, ["not", "text"]),
+            (foreign, context),
+        ]
+        responses.calls.reset()
+        for installation, token in cases:
+            with self.subTest(token=token), self.assertRaises(IntegrationFormError):
+                installation.create_issue(
+                    {"repo": "team/repo", "title": "Title", "createContext": token}
+                )
+        assert not posts(ISSUES)
 
     @responses.activate
     def test_marked_issues_by_other_users_are_never_recovered(self):
         self.mock_repo()
-        dedup = f"https://sentry.example/{self.project.id}/{self.group.id}"
-        body = "Details\n\n" + marker(dedup)
+        responses.get(API + "/repos/search", json={"data": [REPO]}, headers={"X-Total-Count": "1"})
+        context = self.create_fields()["createContext"]["default"]
+        body = "Details\n\n" + marker(self.dedup_id())
         planted = self.remote_issue(number=3, body=body, user=MALLORY)
         responses.get(ISSUES, json=[planted], headers={"X-Total-Count": "1"})
         responses.post(ISSUES, json=self.remote_issue(body=body), status=201)
         result = self.client.post(
-            self.issue_endpoint(), {"repo": "team/repo", "title": "Title", "description": body}
+            self.issue_endpoint(),
+            {
+                "repo": "team/repo",
+                "title": "Title",
+                "description": "Details",
+                "createContext": context,
+            },
         )
         assert result.status_code == 201, result.data
         assert result.data["key"] == "41#7"
         assert len(posts(ISSUES)) == 1
-        # Without a marker there is nothing to recover by: no search, a plain create.
+        # Without form context there is nothing to recover by: no search, a plain create, and a
+        # marker typed into the description is not passed on to Gitea.
         responses.calls.reset()
-        assert self.installation.create_issue({"repo": "team/repo", "title": "Title"})["key"]
+        assert self.installation.create_issue(
+            {"repo": "team/repo", "title": "Title", "description": body}
+        )["key"]
         assert [c.request.method for c in responses.calls if c.request.url.startswith(ISSUES)] == [
             "POST"
         ]
+        assert posted_bodies(ISSUES) == ["Details"]
 
     @responses.activate
     def test_backlink_markers_count_only_when_the_installation_wrote_them(self):

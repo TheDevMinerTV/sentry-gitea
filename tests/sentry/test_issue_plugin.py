@@ -30,7 +30,7 @@ from sentry_gitea.plugins.issue import (
     plugin_allowed_origins,
     plugin_session,
 )
-from sentry_gitea.render import parse_metadata, render_body
+from sentry_gitea.render import ensure_metadata, parse_metadata, render_body
 
 BASE = "https://forge.example/git"
 PUBLIC = "https://public-forge.example/browser"
@@ -661,7 +661,8 @@ class TestManualCreateTrustsOnlyOwnMarkers(APITestCase):
         latest.start()
         self.addCleanup(latest.stop)
         self.addCleanup(GroupMeta.objects.clear_local_cache)
-        self.marker_body = render_body(self.plugin.event_data(self.group, event))
+        data = self.plugin.event_data(self.group, event)
+        self.marker_body = ensure_metadata(render_body(data), data)
 
     @responses.activate
     def test_marker_on_an_issue_by_another_user_is_not_recovered(self):

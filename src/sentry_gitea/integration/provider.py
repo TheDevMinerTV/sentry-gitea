@@ -8,9 +8,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from django.http import HttpRequest, HttpResponse, HttpResponseBase
-from django.middleware.csrf import get_token
 from django.utils.decorators import method_decorator
-from django.utils.html import format_html, format_html_join
 from django.views.decorators.csrf import csrf_protect
 from sentry import identity
 from sentry.identity.pipeline import IdentityPipeline
@@ -40,6 +38,7 @@ from .identity import (
     setup_path,
 )
 from .installation import GiteaIntegration
+from .pages import render_page
 from .repository import GiteaRepositoryProvider
 from .utils import external_id
 
@@ -93,25 +92,9 @@ class OwnerSelectionView:
                 return pipeline.next_step()
             if request.method != "GET":
                 return HttpResponse(status=405)
-            choices = format_html_join(
-                "",
-                '<option value="{}:{}">{} ({})</option>',
-                ((owner["kind"], owner["id"], owner["login"], owner["kind"]) for owner in owners),
+            response = render_page(
+                request, "owner-choice.html", {"action": setup_path(), "owners": owners}
             )
-            body = format_html(
-                '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-                "<title>Install Gitea</title></head><body><h1>Choose a Gitea owner</h1>"
-                "<p>Connect your namespace or an organization you own.</p>"
-                '<form method="post" action="{}"><input type="hidden" name="csrfmiddlewaretoken" '
-                'value="{}"><label for="owner">Owner</label>'
-                '<select name="owner" id="owner" required>'
-                '{}</select><button type="submit">Install Gitea</button></form></body></html>',
-                setup_path(),
-                get_token(request),
-                choices,
-            )
-            response = HttpResponse(body)
-            response["Cache-Control"] = "no-store"
             # The callback URL contains code/state. Sentry's CSRF failure view logs Referer;
             # retain its origin for HTTPS CSRF checks without forwarding the callback query.
             response["Referrer-Policy"] = "origin"

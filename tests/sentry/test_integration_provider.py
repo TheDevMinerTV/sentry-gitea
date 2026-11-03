@@ -3,6 +3,7 @@
 import hashlib
 import re
 from types import SimpleNamespace
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import responses
@@ -217,6 +218,37 @@ class TestIntegrationProvider(IntegrationFixture):
         assert TOKEN not in str(logs.output)
 
     @responses.activate
+    def test_owner_form_renders_in_sentry_layout_and_escapes_gitea_names(self):
+        self.mock_owners()
+        pipeline = FakePipeline({"identity": {"tokens": TOKENS, "scopes": list(OAUTH_SCOPES)}})
+        hostile = [{"kind": "org", "id": 8, "login": '<img src=x onerror="alert(1)">'}]
+        request = RequestFactory().get("/extensions/gitea/setup/")
+        with (
+            patch(
+                "sentry_gitea.integration.provider.available_owners",
+                return_value=(USER, hostile),
+            ),
+            self.assertTemplateUsed("sentry/bases/modal.html"),
+        ):
+            response = OwnerSelectionView().dispatch(request, pipeline)
+        page = response.content.decode()
+        assert response.status_code == 200
+        assert '<option value="org:8">&lt;img src=x onerror=&quot;alert(1)&quot;&gt; (org)' in page
+        assert "<img src=x" not in page
+        assert 'class="btn btn-primary"' in page
+        assert response["Cache-Control"] == "no-store"
+        assert response["Referrer-Policy"] == "origin"
+
+    @responses.activate
+    def test_owner_form_answers_other_methods_with_405(self):
+        self.mock_owners()
+        pipeline = FakePipeline({"identity": {"tokens": TOKENS, "scopes": list(OAUTH_SCOPES)}})
+        request = RequestFactory().put("/extensions/gitea/setup/")
+        request._dont_enforce_csrf_checks = True
+        assert OwnerSelectionView().dispatch(request, pipeline).status_code == 405
+        assert not pipeline.advanced
+
+    @responses.activate
     def test_owner_form_post_requires_csrf(self):
         pipeline = FakePipeline({"identity": {"tokens": TOKENS, "scopes": list(OAUTH_SCOPES)}})
         response = OwnerSelectionView().dispatch(
@@ -296,6 +328,7 @@ class TestGiteaInstallPipeline(IntegrationTestCase):
         )
         assert form.status_code == 200
         assert form["Referrer-Policy"] == "origin"
+        assert "sentry/bases/modal.html" in [t.name for t in form.templates]
         assert b"user:2" in form.content and b'name="csrfmiddlewaretoken"' in form.content
         csrf = re.search(r'name="csrfmiddlewaretoken"\s+value="([^"]+)"', form.content.decode())
         assert csrf is not None
@@ -319,14 +352,20 @@ class TestGiteaInstallPipeline(IntegrationTestCase):
         assert len([call for call in responses.calls if call.request.method == "POST"]) == 1
 
     def test_install_page_lets_the_user_choose_among_permitted_organizations(self):
-        other = self.create_organization(name="bar", owner=self.user)
+        other = self.create_organization(name="<b>bar</b>", owner=self.user)
         member_only = self.create_organization(name="baz")
         self.create_member(organization=member_only, user=self.user, role="member")
-        choice = self.client.get(INSTALL_PATH)
+        with self.assertTemplateUsed("sentry/bases/modal.html"):
+            choice = self.client.get(INSTALL_PATH)
         assert choice.status_code == 200
+        assert choice["Cache-Control"] == "no-store"
+        page = choice.content.decode()
         assert {self.organization.slug, other.slug} == set(
-            re.findall(r'<option value="([^"]+)"', choice.content.decode())
+            re.findall(r'<option value="([^"]+)"', page)
         )
+        assert "&lt;b&gt;bar&lt;/b&gt;" in page and "<b>bar</b>" not in page
+        self.client.handler.enforce_csrf_checks = False
+        assert self.client.post(INSTALL_PATH).status_code == 405
         assert self.client.get(INSTALL_PATH, {"organization": member_only.slug}).status_code == 200
         assert not responses.calls
 
