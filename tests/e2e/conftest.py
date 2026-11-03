@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT / "docker/e2e"))
 
 from browser import Browser  # noqa: E402
 from flows import PluginFlow  # noqa: E402
-from harness import read_env  # noqa: E402
+from harness import API, read_env  # noqa: E402
 from helpers import E2EEnvironment, IntegrationEnvironment  # noqa: E402
 
 
@@ -41,8 +41,15 @@ def e2e() -> E2EEnvironment:
     return E2EEnvironment(**{name.lower(): values[name].rstrip("/") for name in required})
 
 
+@pytest.fixture(scope="session")
+def legacy_plugin_api(e2e: E2EEnvironment) -> None:
+    path = f"/api/0/projects/{e2e.sentry_org}/{e2e.sentry_project}/plugins/"
+    if API(e2e.sentry_url, e2e.sentry_token).request("GET", path, expected=(200, 404)) is None:
+        pytest.skip("This Sentry has no legacy plugin API (removed in 26.10); plugins need 26.3.1")
+
+
 @pytest.fixture
-def plugin_flow(e2e: E2EEnvironment) -> Iterator[PluginFlow]:
+def plugin_flow(e2e: E2EEnvironment, legacy_plugin_api: None) -> Iterator[PluginFlow]:
     if os.environ.get("PYTEST_XDIST_WORKER"):
         pytest.fail("Plugin E2E changes shared project configuration; run without xdist")
     flow = PluginFlow(e2e)

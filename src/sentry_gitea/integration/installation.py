@@ -3,22 +3,41 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, NoReturn
 
+from sentry.integrations.source_code_management.commit_context import (
+    CommitContextIntegration,
+    FileBlameInfo,
+    SourceLineInfo,
+)
 from sentry.shared_integrations.exceptions import ApiError, IntegrationError
 from sentry.users.models.identity import Identity
 
 from sentry_gitea.api.errors import GiteaApiError
 
+from .blame import blame_for_files
 from .client import GiteaIntegrationClient, api_error
 from .issue_sync import GiteaIssueSync
 from .issues import GiteaIssues
 from .source import GiteaSource
 
 
-class GiteaIntegration(GiteaIssueSync, GiteaIssues, GiteaSource):
+class GiteaIntegration(GiteaIssueSync, GiteaIssues, GiteaSource, CommitContextIntegration):
     logger = logging.getLogger(__name__)
+
+    @property
+    def integration_id(self) -> int:
+        return self.model.id
+
+    def get_blame_for_files(
+        self, files: Sequence[SourceLineInfo], extra: dict[str, Any]
+    ) -> list[FileBlameInfo]:
+        return blame_for_files(self, files)
+
+    def on_create_or_update_comment_error(self, api_error: ApiError, metrics_base: str) -> bool:
+        # Without get_pr_comment_workflow(), Sentry never queues pull-request comments.
+        raise NotImplementedError("Gitea has no pull-request comment bot.")
 
     def get_client(self) -> GiteaIntegrationClient:
         try:

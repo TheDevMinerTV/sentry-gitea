@@ -24,7 +24,9 @@ from sentry.utils.locking import UnableToAcquireLock
 
 from sentry_gitea.api.client import git_ref, issue_number, normalize_base_url, normalize_repo
 from sentry_gitea.api.webhooks import PayloadError, normalize_api_commit
+from sentry_gitea.mirror import GitError
 
+from .blame import BLAME_FAILED, blame_enabled, repository_mirror, stable_repo_id
 from .identity import log_failure
 from .source import repository_link_path, repository_url
 from .utils import repo_webhook_secret
@@ -190,6 +192,23 @@ class GiteaRepositoryProvider(IntegrationRepositoryProvider):
             if config.get("hook_id") and str(config["hook_id"]) != str(hook_id):
                 row.update(config={**config, "hook_id": hook_id})
 
+    def create_repositories(self, configs: list[dict[str, Any]], organization: Any) -> Any:
+        """Repository sync: import the owner's repositories this installation can hook.
+
+        Sentry passes get_repositories() rows and stops the whole batch at the first error, so
+        each row is looked up first and one the user cannot administer is left out.
+        """
+        hookable = []
+        for config in configs:
+            try:
+                hookable.append(self.get_repository_data(organization, config))
+            except IntegrationError:
+                logger.info(
+                    "sentry-gitea: repository sync skipped a repository",
+                    extra={"external_id": config.get("external_id")},
+                )
+        return super().create_repositories(hookable, organization)
+
     def build_repository_config(self, organization: Any, data: dict[str, Any]) -> RepositoryConfig:
         installation = self.get_installation(data["installation"], organization.id)
         remote = data["repository"]
@@ -285,9 +304,41 @@ class GiteaRepositoryProvider(IntegrationRepositoryProvider):
                 raise
         return result, repository
 
+    def on_create_repository(self, repo: Any, organization: Any) -> None:
+        if not blame_enabled():
+            return
+        from .tasks import mirror_repository
+
+        transaction.on_commit(
+            lambda: mirror_repository.delay(repository_id=repo.id),
+            using=router.db_for_write(Repository),
+        )
+
     # Repository deletion (called by Sentry's deletion task with pending-deletion field names).
 
+    def _delete_mirror(self, repo: Any) -> None:
+        repo_id = stable_repo_id(repo)
+        if repo_id is None or repo.integration_id is None:
+            return
+        shared = (
+            Repository.objects.filter(
+                integration_id=repo.integration_id, provider=PROVIDER, external_id=str(repo_id)
+            )
+            .exclude(status__in=GONE)
+            .exclude(id=repo.id)
+            .exists()
+        )
+        if shared:
+            return  # Another organization sharing this integration still blames from it.
+        try:
+            repository_mirror(repo.integration_id, repo_id).delete()
+        except (GitError, OSError) as error:
+            log_failure(
+                logger, BLAME_FAILED, error, operation="delete_mirror", repository_id=repo.id
+            )
+
     def on_delete_repository(self, repo: Any) -> None:
+        self._delete_mirror(repo)
         config = repo.config if isinstance(repo.config, dict) else {}
         hook_id = config.get("hook_id")
         if not hook_id or repo.integration_id is None:

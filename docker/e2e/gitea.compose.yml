@@ -1,6 +1,6 @@
 services:
   gitea:
-    image: gitea/gitea:28.1.0
+    image: gitea/gitea:28.2.0
     environment:
       GITEA__security__INSTALL_LOCK: "true"
       GITEA__database__DB_TYPE: sqlite3
@@ -18,7 +18,7 @@ services:
       GITEA__oauth2__ACCESS_TOKEN_EXPIRATION_TIME: "90"
       GITEA__oauth2__INVALIDATE_REFRESH_TOKENS: "false"
       GITEA__server__DISABLE_SSH: "true"
-      # Pinned to the 28.1.0 default: the sync E2E pushes 7 commits to prove backfill.
+      # Pinned to the 28.x default: the sync E2E pushes 7 commits to prove backfill.
       GITEA__ui__FEED_MAX_COMMIT_NUM: "5"
       # Allow a cold Sentry web worker to answer before Gitea marks a delivery failed.
       GITEA__webhook__DELIVER_TIMEOUT: "20"

@@ -9,8 +9,8 @@ open them automatically when alert rules fire. An organization integration based
 owner-scoped install and search, issue sync, commit tracking, stack-trace links and CODEOWNERS.
 
 > **Status: alpha** (version `0.2.0`). The integration's Sentry-level tests run against **Sentry
-> 26.10.0**; the end-to-end suite last ran against **self-hosted Sentry 26.3.1** (errors-only profile)
-> and **Gitea 28.1.0**. Gitea forks such as Forgejo are untested. Expect breaking changes before 1.0.
+> 26.10.0**; the end-to-end suite last ran against **self-hosted Sentry 26.10.0** (errors-only profile)
+> and **Gitea 28.2.0**. Gitea forks such as Forgejo are untested. Expect breaking changes before 1.0.
 > It is not on PyPI yet.
 >
 > **Sentry 26.10 removed the legacy plugin API**, so the project plugins load only on Sentry 26.3.1 and
@@ -78,7 +78,7 @@ or both together. Their issue links are stored separately and are not migrated b
 | Stack-trace links to Gitea source | No | Yes, via code mappings |
 | CODEOWNERS with email owners | No | Yes |
 | CODEOWNERS with `@user` / `@team` owners | No | **Not supported** (file rejected) |
-| Blame / commit-context suspect commits | No | **Not supported** (Gitea has no blame API) |
+| Blame / commit-context suspect commits | No | Opt-in (`GITEA_BLAME_ENABLED`), `git blame` on local mirrors |
 | Pull-request comment bot | No | **Not supported** |
 | Alert-rule "create ticket" action | n/a | **Not supported** |
 | Gitea name and icon in Sentry's UI | n/a | **Not supported** (blank name, generic icon) |
@@ -87,9 +87,11 @@ or both together. Their issue links are stored separately and are not migrated b
 ### Limitations
 
 - **Self-hosted Sentry in monolith mode only.** This package cannot be installed into Sentry SaaS.
-- **No blame-based suspect commits, no PR-comment bot.** Gitea 28.1.0's REST API has no blame endpoint,
-  and the package does not fake one. Release-based suspect commits built from imported commit data have
-  not been verified.
+- **Blame-based suspect commits need git and disk.** Gitea's REST API has no blame endpoint, so with
+  `GITEA_BLAME_ENABLED` the integration keeps a bare git mirror of each added repository and runs
+  `git blame` itself (see [Blame-based suspect commits](#blame-based-suspect-commits)). There is no
+  PR-comment bot. Release-based suspect commits built from imported commit data have not been
+  verified.
 - **CODEOWNERS supports email owners only.** Sentry maps `@user`/`@team` names only for its built-in
   providers. Files with such owners are rejected with an explicit error instead of being partly
   applied.
@@ -106,7 +108,7 @@ or both together. Their issue links are stored separately and are not migrated b
 ## Requirements
 
 - A [self-hosted Sentry](https://develop.sentry.dev/self-hosted/) **26.10.0** installation (Docker Compose).
-- **Gitea 28.1.0** with its built-in issue tracker enabled on the repositories you use.
+- **Gitea 28.2.0** with its built-in issue tracker enabled on the repositories you use.
 - Network paths: Sentry web **and** worker containers → Gitea API. For the integration, users' browsers
   → Gitea (OAuth), and Gitea → Sentry for repository webhooks.
 
@@ -186,6 +188,8 @@ GITEA_CLIENT_SECRET = "<oauth client secret>"
 | `GITEA_WEBHOOK_URL_PREFIX` | no | Base URL **Gitea** uses to deliver webhooks to Sentry. Defaults to Sentry's `system.url-prefix`, which is the recommended target. |
 | `TASKWORKER_IMPORTS` entry | yes | Registers the push backfill and identity refresh tasks with Sentry's taskworker. |
 | `TASKWORKER_SCHEDULES["gitea-identity-refresh"]` | recommended | Every 12 hours, refreshes Gitea identities that were not refreshed for 7 days, so refresh tokens of idle installations do not expire. |
+| `GITEA_BLAME_ENABLED` | no | `True` turns on blame-based suspect commits from local git mirrors. Default `False`. Needs `git` in the image (below). |
+| `GITEA_BLAME_MIRROR_DIR` | no | Where the mirrors live. Default `/data/sentry-gitea/mirrors`, on self-hosted's `sentry-data` volume, which web, taskworker and consumers all mount. |
 | `GITEA_PLUGIN_ALLOWED_BASE_URLS` | no | Plugins only. Origins (`scheme://host[:port]`) that a project's plugin base URL may use even when they resolve to private or loopback addresses. Defaults to the origins of `GITEA_BASE_URL` and `GITEA_PUBLIC_URL` when those are set, otherwise empty; setting it replaces that default. |
 
 If a required setting is missing, Gitea still appears in the integrations directory, and starting setup
@@ -227,19 +231,21 @@ Details, label colors, recovery semantics and logging: [docs/PLUGINS.md](docs/PL
    Sentry 26.10's install dialog only knows Sentry's built-in providers, so the button opens this
    package's own page, `<Sentry URL>/extensions/gitea/install/`, in a new tab. If you belong to several
    organizations, choose one there. Authorize in Gitea, then pick your own namespace or a Gitea
-   organization **you own**. Team admin is not enough. When the page says you can close it, reload the
-   integration's page in Sentry.
+   organization **you own**. Team admin is not enough. The tab closes itself when the installation is
+   done; reload the integration's page in Sentry.
 4. On any Sentry issue, use the Gitea issue actions to **Create** or **Link**.
 5. Optional features:
-   - **Repositories:** add each Gitea repository to Sentry with provider `integrations:gitea`. This
-     creates one webhook (push, issue, issue-assignment and pull-request events) at
+   - **Repositories:** Sentry 26.10 has no Add Repository form. It imports every repository of the
+     installed owner that the authorizing user administers through its repository sync: in **Organization Settings → Repositories**, hover
+     the Gitea owner's repository count and click **Sync now**, or wait for Sentry's daily sync.
+     Repositories that disappear from the owner are disabled at the next sync. Each repository gets
+     one webhook (push, issue, issue-assignment and pull-request events) at
      `<prefix>/extensions/gitea/webhook/<integration id>/<Gitea repository id>/`, signed with a secret
-     derived for that repository, and needs **repository admin** rights. Because of the frontend
-     limitation above, use the API if the UI does not offer Gitea:
-     `POST /api/0/organizations/<org>/repos/` with `provider=integrations:gitea`,
-     `installation=<integration id>` and `identifier=owner/name`. Then check a delivery's response code
-     in the repository's **Settings → Webhooks** page in Gitea. Deleting the repository in Sentry
-     removes the hook.
+     derived for that repository, which needs **repository admin** rights. To add a single repository
+     instead, use the API: `POST /api/0/organizations/<org>/repos/` with
+     `provider=integrations:gitea`, `installation=<integration id>` and `identifier=owner/name`. Then
+     check a delivery's response code in the repository's **Settings → Webhooks** page in Gitea.
+     Deleting the repository in Sentry removes the hook.
    - **Sync:** in the integration's configuration, turn on any of `sync_status_forward`,
      `sync_status_reverse`, `sync_comments`, `sync_assignee_forward` and `sync_assignee_reverse`. All are
      off by default. Assignee sync uses `user_mappings`, a JSON object
@@ -249,6 +255,43 @@ Details, label colors, recovery semantics and logging: [docs/PLUGINS.md](docs/PL
      from `CODEOWNERS`, `.gitea/CODEOWNERS`, `.github/CODEOWNERS` or `docs/CODEOWNERS`.
 
 Details: [docs/INTEGRATION.md](docs/INTEGRATION.md).
+
+### Blame-based suspect commits
+
+Sentry finds suspect commits by blaming the in-app stack frames of a new issue, but only for
+providers on its built-in list. With `GITEA_BLAME_ENABLED = True`, Gitea joins that list, and the
+integration answers blame requests from a bare git mirror per added repository.
+
+1. **Install git in the image.** The Sentry image has no `git`. Add this line to
+   `sentry/enhance-image.sh`, which self-hosted runs as root on Debian:
+
+   ```sh
+   apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+   ```
+
+2. **Turn it on** in `sentry.conf.py` (`GITEA_BLAME_ENABLED = True`), rebuild, and recreate all
+   services. Each repository needs a code mapping, as for stack-trace links.
+
+How it behaves:
+
+- **Disk.** Each mirror is a full bare clone with all branches and tags, at
+  `<GITEA_BLAME_MIRROR_DIR>/<integration id>/<Gitea repository id>.git`. Plan for roughly the size
+  of the repositories in Gitea. Deleting the repository in Sentry deletes its mirror, unless
+  another organization still uses the same repository through the same installation.
+- **Cloning.** Adding a repository, or the first blame for it, queues the
+  `sentry_gitea.integration.mirror_repository` task, which may run for up to 25 minutes. Until the
+  clone finishes, blame skips that repository, so the first new issues after you turn the feature
+  on can miss a suspect commit.
+- **Fetching.** A blame at a commit the mirror already has needs no network. A branch name, such as
+  the code mapping's default branch, fetches at most once every 5 minutes per mirror, and always on
+  the first blame after a push webhook for that repository.
+- **Credentials.** Git authenticates with the installation's OAuth token in an
+  `Authorization: Bearer` header taken from the environment. The token is never written to the
+  mirror's configuration, and never appears in a process's arguments.
+- **Trade-off.** For a project with a Gitea code mapping, Sentry 26.10 then uses blame only and
+  no longer falls back to release-based suspect commits. Sentry caches which providers an
+  organization has for up to 4 hours, so turning the feature on or off takes effect within that
+  time.
 
 ## Security notes
 
@@ -350,12 +393,14 @@ Remove things in this order, so that nothing is left pointing at code that is go
 4. **Plugins.** Remove alert-rule actions that use Gitea Alerts. In each project's plugin settings,
    use **Reset Configuration** (this clears the stored token) and disable both plugins. Delete the
    personal access tokens in Gitea.
-5. **Configuration.** Remove every sentry-gitea line from `sentry/sentry.conf.py` (`ROOT_URLCONF`,
+5. **Mirrors.** If you used `GITEA_BLAME_ENABLED`, delete `GITEA_BLAME_MIRROR_DIR`
+   (`/data/sentry-gitea/mirrors` by default) from the `sentry-data` volume.
+6. **Configuration.** Remove every sentry-gitea line from `sentry/sentry.conf.py` (`ROOT_URLCONF`,
    `SENTRY_DEFAULT_INTEGRATIONS`, the pagination allowlist, `TASKWORKER_IMPORTS`, the
    `TASKWORKER_SCHEDULES` entry and all `GITEA_*` settings) and the `pip install` line from
    `sentry/enhance-image.sh`. Delete the wheel from `sentry/`. Leaving these lines without the package
    breaks Sentry, because the URL configuration and the task module can no longer be imported.
-6. **Rebuild** the images and recreate all Sentry services, for example with `./install.sh`.
+7. **Rebuild** the images and recreate all Sentry services, for example with `./install.sh`.
 
 ## Documentation
 
@@ -382,9 +427,9 @@ make sentry-tests  # tests/sentry inside ghcr.io/getsentry/sentry:26.10.0 with t
 | Unit | `make unit` | Host. Pure `api/` and `render` code, with HTTP mocked by `responses` | Yes |
 | Harness | `uv run pytest tests/e2e -m "not e2e"` | Host. E2E helper and installer logic, no stack needed | Yes |
 | Sentry-level | `make sentry-tests` | The pinned Sentry image plus disposable Postgres 14 and Redis 6.2, using Sentry's pytest plugin. No Snuba/Kafka | Yes |
-| End-to-end | see below | A real self-hosted Sentry 26.3.1 (errors-only) plus `gitea/gitea:28.1.0` | No, local/manual |
+| End-to-end | see below | A real self-hosted Sentry 26.10.0 (errors-only) plus `gitea/gitea:28.2.0` | No, local/manual |
 
-E2E tests need a dedicated self-hosted Sentry 26.3.1 checkout. Do not use a production one: the
+E2E tests need a dedicated self-hosted Sentry 26.10.0 checkout. Do not use a production one: the
 installer edits marked blocks in that checkout's `enhance-image.sh` and `sentry.conf.py` and rebuilds its
 images. Put `SELF_HOSTED_DIR=/path/to/self-hosted` (and `DOCKER_CONFIG` if your Compose is too old) in
 the git-ignored `.e2e/local.env`, then run:

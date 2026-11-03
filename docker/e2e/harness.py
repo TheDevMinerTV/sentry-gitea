@@ -106,7 +106,7 @@ def run(
 
 def self_hosted_dir() -> Path:
     return Path(
-        os.environ.get("SELF_HOSTED_DIR", str(ROOT.parent / "self-hosted-26.3.1"))
+        os.environ.get("SELF_HOSTED_DIR", str(ROOT.parent / "self-hosted-26.10.0"))
     ).resolve()
 
 
@@ -345,6 +345,11 @@ def integration_settings(values: dict[str, str]) -> str:
 # Gitea reaches Sentry's web service directly on self-hosted's Docker network.
 WEBHOOK_URL_PREFIX = "http://web:9000"
 TASKS_MODULE = "sentry_gitea.integration.tasks"
+# Blame suspect commits run git inside Sentry's containers; the Sentry image has none.
+INSTALL_GIT = (
+    "apt-get update && apt-get install -y --no-install-recommends git "
+    "&& rm -rf /var/lib/apt/lists/*"
+)
 # The plugins' base_url in the E2E is Gitea's internal origin, a private address that
 # only an allowlisted origin may reach (every other base_url gets Sentry's SSRF guard).
 PLUGIN_ALLOWED_BASE_URLS = ("http://gitea:3000",)
@@ -354,8 +359,9 @@ def sync_settings(snippet_body: str) -> str:
     """Non-secret harness settings, unless the shipped snippet already enables them.
 
     Webhook deliveries need a URL Gitea can reach, the push backfill task must be
-    registered with Sentry's taskworker, and the plugins must be allowed to call the
-    internal Gitea origin. Comment lines in the snippet do not count.
+    registered with Sentry's taskworker, the plugins must be allowed to call the
+    internal Gitea origin, and blame suspect commits are on. Comment lines in the
+    snippet do not count.
     """
     active = [line for line in snippet_body.splitlines() if not line.lstrip().startswith("#")]
     lines = []
@@ -368,6 +374,8 @@ def sync_settings(snippet_body: str) -> str:
         lines.append(f"TASKWORKER_IMPORTS += ({TASKS_MODULE!r},)")
     if not any(re.match(r"\s*GITEA_PLUGIN_ALLOWED_BASE_URLS\s*=", line) for line in active):
         lines.append(f"GITEA_PLUGIN_ALLOWED_BASE_URLS = {PLUGIN_ALLOWED_BASE_URLS!r}")
+    if not any(re.match(r"\s*GITEA_BLAME_ENABLED\s*=", line) for line in active):
+        lines.append("GITEA_BLAME_ENABLED = True")
     return "\n".join(lines)
 
 
@@ -407,6 +415,7 @@ def install(uninstall: bool = False) -> None:
             wheel = build_wheel(Path(temporary))
             shutil.copy2(wheel, directory / wheel.name)
             install_body = (
+                f"{INSTALL_GIT}\n"
                 "python -m pip install --no-deps --no-index --force-reinstall "
                 + shlex.quote(f"/usr/src/sentry/{wheel.name}")
             )
@@ -431,12 +440,22 @@ def install(uninstall: bool = False) -> None:
     # Self-hosted's Dockerfile copies this whole directory. Keep the managed OAuth
     # settings out of image layers, including on reinstall; the runtime bind mount
     # receives the full block before any service recreation (also restore on failure).
+    # The cleanup image builds FROM the freshly built local Sentry image, which a
+    # docker-container buildx builder cannot see; self-hosted's installer pins this too.
+    build_environment = dict(os.environ, BUILDX_BUILDER="default")
     try:
         write_private(settings, marked_block(original_settings, build_settings_body), settings_mode)
-        run(compose + ["build", "web"], label="Build Sentry image", capture=False, timeout=1800)
+        run(
+            compose + ["build", "web"],
+            label="Build Sentry image",
+            env=build_environment,
+            capture=False,
+            timeout=1800,
+        )
         run(
             compose + ["build", "sentry-cleanup"],
             label="Build cleanup image",
+            env=build_environment,
             capture=False,
             timeout=1800,
         )

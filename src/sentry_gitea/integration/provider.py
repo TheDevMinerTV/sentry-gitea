@@ -29,6 +29,7 @@ from sentry_gitea.api.client import GiteaClient, issue_number, normalize_repo
 from sentry_gitea.api.errors import GiteaApiError
 from sentry_gitea.meta import AUTHOR, ISSUES_URL, PROJECT_URL
 
+from .blame import blame_enabled
 from .identity import (
     ConfigurationError,
     GiteaIdentityProvider,
@@ -186,6 +187,19 @@ class GiteaIntegrationProvider(IntegrationProvider):
         bindings.add(
             "integration-repository.provider", GiteaRepositoryProvider, id="integrations:gitea"
         )
+        # Sentry 26.10's Repositories page has no Add Repository form: it only lists what the
+        # repository sync (its "Sync now" button and a daily beat) imports for listed providers.
+        from sentry.integrations.source_code_management import sync_repos
+
+        if self.key not in sync_repos.SCM_SYNC_PROVIDERS:
+            sync_repos.SCM_SYNC_PROVIDERS.append(self.key)
+        if blame_enabled():
+            # Sentry only runs blame for providers in this list. Gitea stays out unless enabled:
+            # listed providers with a code mapping lose the release-based suspect commits.
+            from sentry.tasks import post_process
+
+            if self.key not in post_process.COMMIT_CONTEXT_INTEGRATION_PROVIDERS:
+                post_process.COMMIT_CONTEXT_INTEGRATION_PROVIDERS.append(self.key)
 
     def get_pipeline_views(self) -> list[Any]:
         return [

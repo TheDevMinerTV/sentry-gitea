@@ -89,6 +89,40 @@ class TestAddRepository(SyncFixture):
         assert REPO_SECRET != METADATA["webhook_secret"]
 
     @responses.activate
+    def test_repository_sync_adds_owner_repositories_with_one_signed_hook(self):
+        read_only = {
+            **WEBHOOK_REPO,
+            "id": 42,
+            "name": "read-only",
+            "full_name": "team/read-only",
+            "permissions": {"admin": False, "push": True, "pull": True},
+        }
+        responses.get(
+            API + "/repos/search",
+            json={"data": [read_only, WEBHOOK_REPO]},
+            headers={"X-Total-Count": "2"},
+        )
+        responses.get(API + "/repos/team/read-only", json=read_only)
+        responses.get(API + "/repos/team/repo", json=WEBHOOK_REPO)
+        responses.get(HOOKS, json=[], headers={"X-Total-Count": "0"})
+        responses.post(HOOKS, json={"id": 4, "type": "gitea"}, status=201)
+        with self.tasks():
+            result = self.client.post(
+                f"/api/0/organizations/{self.organization.slug}/integrations/"
+                f"{self.integration.id}/repo-sync/"
+            )
+        assert result.status_code == 202, result.data
+        repo = Repository.objects.get(organization_id=self.organization.id)
+        assert (repo.name, repo.external_id, repo.status) == (
+            "team/repo",
+            "41",
+            ObjectStatus.ACTIVE,
+        )
+        assert repo.config["hook_id"] == 4
+        [post] = requests("POST")
+        assert json.loads(post.request.body)["config"]["url"] == self.gitea_hook_url()
+
+    @responses.activate
     @override_settings(GITEA_WEBHOOK_URL_PREFIX=None)
     def test_webhook_prefix_defaults_to_system_url_prefix(self):
         responses.get(API + "/repos/team/repo", json=WEBHOOK_REPO)

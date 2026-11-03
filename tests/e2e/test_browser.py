@@ -1,7 +1,8 @@
 """Host regressions for interrupted/denied OAuth and credential diagnostics."""
 
+import json
 import secrets
-from urllib.parse import parse_qs, urlencode
+from urllib.parse import urlencode
 
 import pytest
 import responses
@@ -273,22 +274,23 @@ def test_credential_registry_contains_only_explicit_secret_fields(settings):
     assert not nonsecrets.intersection(item.value for item in credentials)
 
 
-LOGIN_FORM = (
-    '<form method="post"><input name="csrfmiddlewaretoken" value="test-csrf">'
-    '<input name="op" value="login"><input name="username">'
-    '<input name="password" type="password"></form>'
-)
+# Sentry 26.10 renders its login form in React; the server page carries no form.
+LOGIN_PAGE = '<div id="blk_router"></div>'
 
 
 def sentry_login(settings, *, user=None, member=None):
     root = settings.stack.sentry_url
-    responses.get(root + "/auth/login/", body=LOGIN_FORM)
-    responses.post(
+    responses.get(
         root + "/auth/login/",
-        status=302,
-        headers={"Location": "/", "Set-Cookie": "sessionid=authenticated-owner; Path=/"},
+        body=LOGIN_PAGE,
+        headers={"Set-Cookie": "sc=test-csrf; Path=/"},
     )
-    responses.get(root + "/", body="Signed in")
+    responses.get(root + "/api/0/auth/config/", json={})
+    responses.post(
+        root + "/api/0/auth/login/",
+        json={"nextUri": "/organizations/e2e/issues/", "user": {"id": "2"}},
+        headers={"Set-Cookie": "sessionid=authenticated-owner; Path=/"},
+    )
     identity = {
         "id": "2",
         "username": settings.sentry_owner_username,
@@ -334,15 +336,14 @@ def test_module_browser_logs_in_once_as_owner_across_eight_installs(settings, mo
             browser.owner_page(settings)
     finally:
         lifetime.close()
-    logins = [call.request for call in responses.calls if call.request.url.endswith("/auth/login/")]
-    posts = [request for request in logins if request.method == "POST"]
-    assert len(posts) == 1
-    assert parse_qs(posts[0].body) == {
-        "username": [settings.sentry_owner_username],
-        "password": [settings.sentry_owner_password],
-        "op": ["login"],
-        "csrfmiddlewaretoken": ["test-csrf"],
+    posts = [call.request for call in responses.calls if call.request.method == "POST"]
+    posts = [request for request in posts if "/auth/login/" in request.url]
+    assert [request.url for request in posts] == [settings.stack.sentry_url + "/api/0/auth/login/"]
+    assert json.loads(posts[0].body) == {
+        "username": settings.sentry_owner_username,
+        "password": settings.sentry_owner_password,
     }
+    assert posts[0].headers["X-CSRFToken"] == "test-csrf"
     assert len(revocations) == 8
     assert not browser.sentry_logged_in
 
@@ -385,19 +386,16 @@ def test_sentry_login_rate_limit_is_explicit_and_never_retried(settings, status,
     root = settings.stack.sentry_url
     responses.get(
         root + "/auth/login/",
-        body=LOGIN_FORM,
-        headers={"Set-Cookie": "csrftoken=login-form; Path=/"},
+        body=LOGIN_PAGE,
+        headers={"Set-Cookie": "sc=login-form; Path=/"},
     )
-    responses.post(
-        root + "/auth/login/",
-        status=status,
-        body=LOGIN_FORM + message,
-    )
+    responses.get(root + "/api/0/auth/config/", json={})
+    responses.post(root + "/api/0/auth/login/", status=status, json={"detail": message})
     lifetime = integration_browser.__wrapped__(settings)
     with pytest.raises(pytest.fail.Exception, match="Sentry login rate-limited"):
         next(lifetime)
     # An unauthenticated CSRF cookie must not trigger logout or mask the diagnosis.
-    assert len(responses.calls) == 2
+    assert len(responses.calls) == 3
 
 
 @responses.activate
@@ -423,7 +421,7 @@ def test_setup_login_redirect_has_specific_diagnostic(settings, rate_limited):
     )
     responses.get(
         root + "/auth/login/",
-        body=LOGIN_FORM
+        body=LOGIN_PAGE
         + (
             "You have made too many login attempts. Please try again later." if rate_limited else ""
         ),

@@ -9,12 +9,16 @@ test transaction guard rejects.
 
 import importlib.util
 import os
+import sys
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 import responses
 
 pytest_plugins = ["sentry.testutils.pytest"]
+# The Sentry image ships a top-level `tests` package, so share git_fixtures by path.
+sys.path.append(str(Path(__file__).parents[1] / "unit"))
 
 # Sentry 26.10 removed the legacy plugin API (`sentry.plugins.bases`), so the plugins cannot load.
 LEGACY_PLUGIN_TESTS = ["test_alerts_plugin.py", "test_issue_plugin.py", "test_plugin_smoke.py"]

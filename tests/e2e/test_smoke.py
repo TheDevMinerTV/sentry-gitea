@@ -13,7 +13,7 @@ def test_sentry_api(e2e: E2EEnvironment) -> None:
     assert result["slug"] == e2e.sentry_org
 
 
-def test_project_plugins(e2e: E2EEnvironment) -> None:
+def test_project_plugins(e2e: E2EEnvironment, legacy_plugin_api: None) -> None:
     api = API(e2e.sentry_url, e2e.sentry_token)
     result = api.request("GET", f"/api/0/projects/{e2e.sentry_org}/{e2e.sentry_project}/plugins/")
     assert {"gitea", "gitea_alerts"} <= {plugin["id"] for plugin in result}
