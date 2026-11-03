@@ -126,7 +126,9 @@ class OwnerSelectionView:
 class GiteaIntegrationProvider(IntegrationProvider):
     key = "gitea"
     name = "Gitea"
-    can_add = True
+    # Sentry 26.10's install modal only renders its built-in providers, so the directory
+    # links to this package's own install page instead.
+    can_add = False
     allow_multiple = True
     can_disable = False
     needs_default_identity = True
@@ -167,7 +169,16 @@ class GiteaIntegrationProvider(IntegrationProvider):
         noun="Gitea owner",
         issue_url=ISSUES_URL,
         source_url=PROJECT_URL,
-        aspects={},
+        aspects={
+            "externalInstall": {
+                "url": "/extensions/gitea/install/",
+                "buttonText": "Install",
+                "noticeText": (
+                    "Install opens a separate page: authorize in Gitea and choose an owner. "
+                    "Reload this page afterwards."
+                ),
+            }
+        },
     )
 
     def setup(self) -> None:

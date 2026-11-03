@@ -121,7 +121,7 @@ HANDLERS: dict[str, type[GiteaWebhook]] = {
 
 @cell_silo_endpoint
 class GiteaWebhookEndpoint(Endpoint):
-    owner = ApiOwner.INTEGRATIONS
+    owner = ApiOwner.CODING_WORKFLOWS
     publish_status = {"POST": ApiPublishStatus.PRIVATE}
     authentication_classes = ()
     permission_classes = ()

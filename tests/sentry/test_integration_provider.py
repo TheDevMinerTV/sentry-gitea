@@ -47,6 +47,7 @@ METADATA = {
     "scopes": list(OAUTH_SCOPES),
     "webhook_secret": "ab" * 32,
 }
+INSTALL_PATH = "/extensions/gitea/install/"
 SETTINGS = {
     "GITEA_BASE_URL": BASE,
     "GITEA_PUBLIC_URL": PUBLIC,
@@ -149,7 +150,9 @@ class TestIntegrationProvider(IntegrationFixture):
         data = serialize(
             provider, serializer=IntegrationProviderSerializer(), organization=self.organization
         )
-        assert data["canAdd"] is True
+        # Sentry 26.10's install modal cannot render out-of-tree providers.
+        assert data["canAdd"] is False
+        assert data["metadata"]["aspects"]["externalInstall"]["url"] == INSTALL_PATH
         assert provider.allow_multiple and provider.needs_default_identity
         assert provider.features == frozenset(
             {
@@ -251,7 +254,7 @@ class TestIntegrationProvider(IntegrationFixture):
     def test_missing_settings_is_setup_error_not_directory_error(self):
         with override_settings(GITEA_CLIENT_ID="", GITEA_CLIENT_SECRET="", GITEA_BASE_URL=""):
             provider = GiteaIntegrationProvider()
-            assert provider.can_add
+            assert provider.metadata.aspects["externalInstall"]
             pipeline = FakePipeline()
             with self.assertLogs("sentry_gitea.integration.identity", level="WARNING"):
                 from sentry_gitea.integration.identity import OAuthAuthorizeView
@@ -283,7 +286,7 @@ class TestGiteaInstallPipeline(IntegrationTestCase):
         )
         responses.get(API + "/user", json=USER)
         responses.get(API + "/user/orgs", json=[])
-        start = self.client.get(self.init_path)
+        start = self.client.get(INSTALL_PATH, {"organization": self.organization.slug})
         assert start.status_code == 302
         query = parse_qs(urlsplit(start["Location"]).query)
         assert query["state"] and query["code_challenge_method"] == ["S256"]
@@ -314,3 +317,24 @@ class TestGiteaInstallPipeline(IntegrationTestCase):
         # The finished session cannot replay the code exchange.
         self.client.get(self.setup_path, {"state": query["state"][0], "code": "private-code"})
         assert len([call for call in responses.calls if call.request.method == "POST"]) == 1
+
+    def test_install_page_lets_the_user_choose_among_permitted_organizations(self):
+        other = self.create_organization(name="bar", owner=self.user)
+        member_only = self.create_organization(name="baz")
+        self.create_member(organization=member_only, user=self.user, role="member")
+        choice = self.client.get(INSTALL_PATH)
+        assert choice.status_code == 200
+        assert {self.organization.slug, other.slug} == set(
+            re.findall(r'<option value="([^"]+)"', choice.content.decode())
+        )
+        assert self.client.get(INSTALL_PATH, {"organization": member_only.slug}).status_code == 200
+        assert not responses.calls
+
+    def test_install_requires_an_organization_the_user_may_install_into(self):
+        self.login_as(self.create_user())
+        assert self.client.get(INSTALL_PATH).status_code == 403
+
+    def test_setup_without_a_started_install_is_rejected(self):
+        response = self.client.get(self.setup_path, {"state": "x", "code": "y"})
+        assert response.status_code == 400
+        assert not responses.calls

@@ -8,9 +8,13 @@ installed into the Sentry image with pip. You can create and link Gitea issues f
 open them automatically when alert rules fire. An organization integration based on OAuth adds
 owner-scoped install and search, issue sync, commit tracking, stack-trace links and CODEOWNERS.
 
-> **Status: alpha** (version `0.2.0`). Tested only with **self-hosted Sentry 26.3.1** (errors-only
-> profile) and **Gitea 28.1.0**. Other versions, and Gitea forks such as Forgejo, are untested. Expect
-> breaking changes before 1.0. It is not on PyPI yet.
+> **Status: alpha** (version `0.2.0`). The integration's Sentry-level tests run against **Sentry
+> 26.10.0**; the end-to-end suite last ran against **self-hosted Sentry 26.3.1** (errors-only profile)
+> and **Gitea 28.1.0**. Gitea forks such as Forgejo are untested. Expect breaking changes before 1.0.
+> It is not on PyPI yet.
+>
+> **Sentry 26.10 removed the legacy plugin API**, so the project plugins load only on Sentry 26.3.1 and
+> older. The organization integration works on both.
 
 ## Why
 
@@ -90,7 +94,7 @@ or both together. Their issue links are stored separately and are not migrated b
   providers. Files with such owners are rejected with an explicit error instead of being partly
   applied.
 - **Comments made in Gitea are not imported** into Sentry.
-- **The Gitea provider shows up with a blank name and a generic icon** in parts of Sentry 26.3.1's
+- **The Gitea provider shows up with a blank name and a generic icon** in parts of Sentry's
   prebuilt frontend, such as the issue sidebar. Those mappings are compiled into the frontend and a
   Python package cannot change them. Backend forms and APIs work normally.
 - **One Gitea instance and OAuth app per Sentry deployment** for the integration. The plugins can point
@@ -101,7 +105,7 @@ or both together. Their issue links are stored separately and are not migrated b
 
 ## Requirements
 
-- A [self-hosted Sentry](https://develop.sentry.dev/self-hosted/) **26.3.1** installation (Docker Compose).
+- A [self-hosted Sentry](https://develop.sentry.dev/self-hosted/) **26.10.0** installation (Docker Compose).
 - **Gitea 28.1.0** with its built-in issue tracker enabled on the repositories you use.
 - Network paths: Sentry web **and** worker containers → Gitea API. For the integration, users' browsers
   → Gitea (OAuth), and Gitea → Sentry for repository webhooks.
@@ -220,8 +224,11 @@ Details, label colors, recovery semantics and logging: [docs/PLUGINS.md](docs/PL
    include any subpath. The integration requests `read:user read:organization write:issue write:repository`.
 2. Put the client ID and secret in `sentry.conf.py` (above), then rebuild and restart.
 3. As an **organization owner**, go to **Organization Settings → Integrations → Gitea → Install**.
-   Authorize in Gitea, then pick your own namespace or a Gitea organization **you own**. Team admin is not
-   enough.
+   Sentry 26.10's install dialog only knows Sentry's built-in providers, so the button opens this
+   package's own page, `<Sentry URL>/extensions/gitea/install/`, in a new tab. If you belong to several
+   organizations, choose one there. Authorize in Gitea, then pick your own namespace or a Gitea
+   organization **you own**. Team admin is not enough. When the page says you can close it, reload the
+   integration's page in Sentry.
 4. On any Sentry issue, use the Gitea issue actions to **Create** or **Link**.
 5. Optional features:
    - **Repositories:** add each Gitea repository to Sentry with provider `integrations:gitea`. This
@@ -367,7 +374,7 @@ layers also need Docker with **Compose ≥ 2.32.2**.
 uv sync            # create .venv with the dev tools
 make unit          # host unit tests (never import Sentry)
 make lint          # ruff check + ruff format --check
-make sentry-tests  # tests/sentry inside ghcr.io/getsentry/sentry:26.3.1 with throwaway Postgres/Redis
+make sentry-tests  # tests/sentry inside ghcr.io/getsentry/sentry:26.10.0 with throwaway Postgres/Redis
 ```
 
 | Layer | Command | Runs where | In CI |

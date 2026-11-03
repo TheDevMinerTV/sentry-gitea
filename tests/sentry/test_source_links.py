@@ -222,7 +222,12 @@ class TestSourceLinks(SyncFixture):
         )
         rows = self.installation.get_repositories("team")
         assert [r["identifier"] for r in rows] == ["team/repo", "team/b"]
-        assert rows[0] == {"identifier": "team/repo", "name": "team/repo", "default_branch": "main"}
+        assert rows[0] == {
+            "identifier": "team/repo",
+            "name": "team/repo",
+            "external_id": "41",
+            "default_branch": "main",
+        }
         assert self.installation.get_repository_choices(None, {}) == (
             "team/b",
             [("team/b", "team/b")],

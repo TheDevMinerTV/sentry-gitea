@@ -24,7 +24,7 @@ services:
       retries: 30
 
   tests:
-    image: ghcr.io/getsentry/sentry:26.3.1
+    image: ghcr.io/getsentry/sentry:26.10.0
     user: root
     working_dir: /work
     entrypoint: [/bin/bash, /work/docker/run-sentry-tests.sh]
