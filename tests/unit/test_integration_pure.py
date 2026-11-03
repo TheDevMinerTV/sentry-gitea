@@ -2,6 +2,13 @@ import hashlib
 
 import pytest
 
+from sentry_gitea.integration.selection import (
+    RepositoryChoice,
+    is_selected,
+    parse_repository_ids,
+    repository_choices,
+    stored_selection,
+)
 from sentry_gitea.integration.utils import (
     OAUTH_SCOPES,
     external_id,
@@ -62,3 +69,42 @@ def test_invalid_or_incomplete_requested_scopes_never_fall_back_to_all(scopes):
 def test_malformed_token_responses_are_rejected_without_echoing_them(tokens):
     with pytest.raises(ValueError, match="Gitea returned invalid OAuth credentials"):
         normalize_tokens(tokens)
+
+
+def test_repository_selection_is_sorted_unique_ids_and_missing_means_all():
+    assert parse_repository_ids(["42", 41, 42]) == [41, 42]
+    assert stored_selection({}) is None
+    assert stored_selection({"repository_ids": []}) == frozenset()
+    assert stored_selection({"repository_ids": [41]}) == {41}
+    assert is_selected(None, "43") and is_selected(frozenset({41}), "41")
+    assert not is_selected(frozenset({41}), "43") and not is_selected(frozenset({41}), "team/x")
+
+
+@pytest.mark.parametrize("value", ["41", [0], [-1], ["4a"], [True], [4.0], ["٤١"], None])
+def test_invalid_repository_selections_are_rejected(value):
+    with pytest.raises(ValueError):
+        parse_repository_ids(value)
+
+
+def test_repository_choices_keep_only_administered_repositories_of_the_owner():
+    def row(repo_id, full_name, owner=8, admin=True, **changes):
+        return {
+            "id": repo_id,
+            "full_name": full_name,
+            "owner": {"id": owner},
+            "permissions": {"admin": admin},
+            **changes,
+        }
+
+    rows = [
+        row(43, "team/Zeta", description="d" * 300),
+        row(41, "team/alpha"),
+        row(42, "team/read-only", admin=False),
+        row(44, "other/repo", owner=9),
+        row(45, "team/bad name"),
+        row("46", "team/string-id"),
+    ]
+    assert repository_choices(rows, 8) == [
+        RepositoryChoice(41, "team/alpha", ""),
+        RepositoryChoice(43, "team/Zeta", "d" * 200),
+    ]

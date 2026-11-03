@@ -1,0 +1,31 @@
+{% extends "sentry/bases/modal.html" %}
+
+{% block wrapperclass %}narrow auth{% endblock %}
+{% block modal_header_signout %}{% endblock %}
+{% block title %}Install Gitea | {{ block.super }}{% endblock %}
+
+{% block main %}
+<h3>Choose repositories</h3>
+<p>Sentry imports only these repositories and installs a webhook on each. You can change the selection later in the integration's settings.</p>
+<form action="{{ action }}" method="post" class="form-stacked">
+  {% csrf_token %}
+  <input type="hidden" name="step" value="repositories">
+  <fieldset class="form-group">
+    <legend class="control-label">Repositories you administer</legend>
+    {% for repository in repositories %}
+    <div class="checkbox">
+      <label>
+        <input type="checkbox" name="repository" value="{{ repository.id }}">
+        {{ repository.full_name }}
+      </label>
+      {% if repository.description %}<p class="help-block">{{ repository.description }}</p>{% endif %}
+    </div>
+    {% empty %}
+    <p>This owner has no repositories you administer. You can still install and select repositories later.</p>
+    {% endfor %}
+  </fieldset>
+  <fieldset class="form-actions">
+    <button type="submit" class="btn btn-primary">Install Gitea</button>
+  </fieldset>
+</form>
+{% endblock %}

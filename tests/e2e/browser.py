@@ -10,6 +10,7 @@ import re
 import secrets
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
+from typing import Any
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
 import requests
@@ -68,6 +69,8 @@ class Page(HTMLParser):
                 self.current.fields[name] = attributes.get("value") or ""
             elif "checked" in attributes:
                 self.current.fields[name] = attributes.get("value") or "on"
+            if attributes.get("type") == "checkbox":
+                self.current.choices.setdefault(name, {})[attributes.get("value") or "on"] = ""
         elif tag == "button" and name:
             self.current.buttons.append((name, attributes.get("value") or ""))
         elif tag == "select" and name:
@@ -224,7 +227,7 @@ class Browser:
             response = self.request("GET", urljoin(response.url, response.headers["Location"]))
         raise RuntimeError("Browser exceeded 20 redirects")
 
-    def submit(self, page: Page, form: Form, values: dict[str, str]) -> requests.Response:
+    def submit(self, page: Page, form: Form, values: dict[str, Any]) -> requests.Response:
         url = urljoin(page.url, form.action)
         if origin(url) != origin(page.url) or form.method.lower() != "post":
             raise RuntimeError("Browser expected a POST form on the same origin")
@@ -457,10 +460,24 @@ class Browser:
             return page
         raise RuntimeError("Gitea install exceeded its bounded browser steps")
 
-    def install(self, env: IntegrationEnvironment, owner: str, api) -> str:
+    def install(
+        self,
+        env: IntegrationEnvironment,
+        owner: str,
+        api,
+        repositories: list[str] | None = None,
+    ) -> str:
+        """Install `owner`, selecting `repositories` (Gitea IDs; all offered ones by default)."""
         page = self.owner_page(env)
         check(owner in self.owner_choices, "Requested owner was not offered by Sentry")
         response = self.follow(self.submit(page, page.form("owner"), {"owner": owner}))
+        picker = Page(response.url, response.text)
+        forms = [form for form in picker.forms if "csrfmiddlewaretoken" in form.fields]
+        check(len(forms) == 1, "Sentry did not show the repository picker")
+        offered = list(forms[0].choices.get("repository", {}))
+        chosen = offered if repositories is None else repositories
+        check(set(chosen) <= set(offered), "Requested repositories were not offered by Sentry")
+        response = self.follow(self.submit(picker, forms[0], {"repository": chosen}))
         check(
             Page(response.url, response.text).contains("You can safely close this window now."),
             "Sentry did not finish the integration setup dialog",
