@@ -1,3 +1,4 @@
+import os
 import socket
 import subprocess
 import threading
@@ -9,7 +10,10 @@ from git_fixtures import ALICE, BOB, GIT_AVAILABLE, git, redirect_to, serve, sou
 
 from sentry_gitea import mirror as mirror_module
 from sentry_gitea.mirror import (
+    MAINTAINED_STAMP,
+    MAINTENANCE_INTERVAL,
     SYNCED_STAMP,
+    TASK_CLAIM_LIFETIME,
     BlameCommit,
     GitError,
     GitMirror,
@@ -364,6 +368,32 @@ def test_fetches_never_run_gc_and_maintenance_does(published, remote, mirror):
     assert len(list(packs.glob("*.pack"))) == 2
     mirror.maintain()
     assert len(list(packs.glob("*.pack"))) == 1
+
+
+@needs_git
+def test_maintenance_is_due_a_day_after_the_last_one(remote, mirror):
+    assert not mirror.maintenance_due(), "there is no mirror to maintain"
+    mirror.clone(remote)
+    assert mirror.maintenance_due(), "a mirror never maintained"
+    mirror.maintain()
+    assert not mirror.maintenance_due()
+    day_ago = time.time() - MAINTENANCE_INTERVAL - 1
+    os.utime(mirror.path / MAINTAINED_STAMP, (day_ago, day_ago))
+    assert mirror.maintenance_due()
+
+
+def test_one_mirror_task_claim_at_a_time_until_released_or_lost(tmp_path):
+    mirror = GitMirror(mirror_path(tmp_path, 7, 41))
+    other_process = GitMirror(mirror.path)
+    assert mirror.claim_task()
+    assert not other_process.claim_task()
+    mirror.release_task()
+    assert other_process.claim_task()
+    lost = time.time() - TASK_CLAIM_LIFETIME - 1
+    os.utime(mirror.path.with_suffix(".queued"), (lost, lost))
+    assert mirror.claim_task(), "a task that never ran must not block the next one forever"
+    assert not other_process.claim_task()
+    assert not mirror.exists()
 
 
 @needs_git

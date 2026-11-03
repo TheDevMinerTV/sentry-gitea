@@ -7,15 +7,18 @@
 {% block main %}
 <h3>Choose repositories</h3>
 <p>Sentry imports only these repositories and installs a webhook on each. You can change the selection later in the integration's settings.</p>
+{% if reinstall %}
+<p>This owner is already installed: the current selection is ticked. Unticking a repository deletes its Sentry repository, with its commits and code mappings. Selected repositories that you do not administer are not listed and stay selected.</p>
+{% endif %}
 <form action="{{ action }}" method="post" class="form-stacked">
   {% csrf_token %}
   <input type="hidden" name="step" value="repositories">
   <fieldset class="form-group">
     <legend class="control-label">Repositories you administer</legend>
-    {% for repository in repositories %}
+    {% for repository, ticked in repositories %}
     <div class="checkbox">
       <label>
-        <input type="checkbox" name="repository" value="{{ repository.id }}">
+        <input type="checkbox" name="repository" value="{{ repository.id }}"{% if ticked %} checked{% endif %}>
         {{ repository.full_name }}
       </label>
       {% if repository.description %}<p class="help-block">{{ repository.description }}</p>{% endif %}

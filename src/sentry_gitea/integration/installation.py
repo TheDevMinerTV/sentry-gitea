@@ -75,7 +75,7 @@ class GiteaIntegration(GiteaIssueSync, GiteaIssues, GiteaSource, CommitContextIn
     ) -> list[dict[str, Any]]:
         with self._issue_operation():
             rows = self.get_client().search_repositories(query, page_number_limit, issues=False)
-        selection = self._selection()
+        selection = self.repository_selection()
         return [
             {
                 "identifier": row["full_name"],
@@ -87,11 +87,11 @@ class GiteaIntegration(GiteaIssueSync, GiteaIssues, GiteaSource, CommitContextIn
             if is_selected(selection, row["id"])
         ]
 
-    def _selection(self) -> frozenset[int] | None:
+    def repository_selection(self) -> frozenset[int] | None:
         return stored_selection(self.org_integration.config if self.org_integration else None)
 
     def get_organization_config(self) -> list[dict[str, Any]]:
-        selection = self._selection()
+        selection = self.repository_selection()
         field: dict[str, Any] = {
             "name": REPOSITORIES_KEY,
             "type": "select",

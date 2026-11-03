@@ -19,6 +19,7 @@ from sentry.integrations.base import (
     IntegrationProvider,
 )
 from sentry.integrations.models.integration import Integration
+from sentry.integrations.models.organization_integration import OrganizationIntegration
 from sentry.pipeline.views.nested import NestedPipelineView
 from sentry.plugins.base import bindings
 from sentry.shared_integrations.exceptions import IntegrationError
@@ -39,8 +40,16 @@ from .identity import (
 )
 from .installation import GiteaIntegration
 from .pages import render_page
-from .repository import GiteaRepositoryProvider
-from .selection import REPOSITORIES_KEY, RepositoryChoice, parse_repository_ids, repository_choices
+from .repository import GiteaRepositoryProvider, imported_repository_ids
+from .selection import (
+    REPOSITORIES_KEY,
+    PickedRepositories,
+    RepositoryChoice,
+    initially_ticked,
+    parse_repository_ids,
+    repository_choices,
+    stored_selection,
+)
 from .utils import external_id
 
 logger = logging.getLogger(__name__)
@@ -114,20 +123,34 @@ class RepositorySelectionView:
         try:
             config = OAuthSettings.load()
             state = pipeline.fetch_state("identity")
-            owner_id = int(issue_number(str(pipeline.fetch_state("owner")).partition(":")[2]))
+            owner_kind, _, owner_id = str(pipeline.fetch_state("owner")).partition(":")
+            owner_id = int(issue_number(owner_id))
             with GiteaClient(
                 config.base_url, state["tokens"]["access_token"], token_type="Bearer"
             ) as client:
                 choices = repository_choices(client.search_repositories(owner_id), owner_id)
+            installed = installed_config(
+                external_id(config.base_url, owner_kind, owner_id), pipeline.organization.id
+            )
+            reinstall = installed is not None
+            offered = frozenset(choice.id for choice in choices)
             # The owner form's POST renders this step too; only this form's own POST submits it.
             if request.method == "POST" and request.POST.get("step") == "repositories":
                 chosen = chosen_repositories(choices, request.POST.getlist("repository"))
-                pipeline.bind_state(REPOSITORIES_KEY, chosen)
+                picked = PickedRepositories(offered, frozenset(chosen), reinstall)
+                pipeline.bind_state(REPOSITORIES_KEY, picked.to_state())
                 return pipeline.next_step()
             if request.method not in {"GET", "POST"}:
                 return HttpResponse(status=405)
+            ticked = initially_ticked(reinstall, stored_selection(installed), offered)
             response = render_page(
-                request, "repository-choice.html", {"action": setup_path(), "repositories": choices}
+                request,
+                "repository-choice.html",
+                {
+                    "action": setup_path(),
+                    "repositories": [(choice, choice.id in ticked) for choice in choices],
+                    "reinstall": reinstall,
+                },
             )
             response["Referrer-Policy"] = "origin"
             return response
@@ -137,6 +160,19 @@ class RepositorySelectionView:
                 pipeline,
                 "Unable to list the owner's Gitea repositories. Start setup again.",
             )
+
+
+def installed_config(identifier: str, organization_id: int) -> dict[str, Any] | None:
+    """The organization's stored configuration for this owner, or None if it is not installed."""
+    return (
+        OrganizationIntegration.objects.filter(
+            organization_id=organization_id,
+            integration__provider=GiteaIntegrationProvider.key,
+            integration__external_id=identifier,
+        )
+        .values_list("config", flat=True)
+        .first()
+    )
 
 
 def chosen_repositories(choices: list[RepositoryChoice], values: list[str]) -> list[int]:
@@ -268,7 +304,9 @@ class GiteaIntegrationProvider(IntegrationProvider):
                     "webhook_secret": previous.get("webhook_secret") or secrets.token_hex(32),
                 },
                 "post_install_data": {
-                    REPOSITORIES_KEY: parse_repository_ids(state[REPOSITORIES_KEY])
+                    REPOSITORIES_KEY: PickedRepositories.from_state(
+                        state[REPOSITORIES_KEY]
+                    ).to_state()
                 },
             }
         except (ConfigurationError, GiteaApiError, ValueError, KeyError, TypeError) as error:
@@ -280,7 +318,12 @@ class GiteaIntegrationProvider(IntegrationProvider):
     def post_install(
         self, integration: Integration, organization: Any, *, extra: dict[str, Any]
     ) -> None:
-        # Stored before the first sync, which this starts, so it imports only the chosen ones.
-        integration.get_installation(organization_id=organization.id).update_organization_config(
-            {REPOSITORIES_KEY: extra[REPOSITORIES_KEY]}
+        # Sentry calls this on every install of the owner, reinstalls included.
+        installation = integration.get_installation(organization_id=organization.id)
+        picked = PickedRepositories.from_state(extra[REPOSITORIES_KEY])
+        selection = picked.applied_to(
+            installation.repository_selection(), imported_repository_ids(installation)
         )
+        if selection is not None:
+            # Stored before the first sync, which this starts, so it imports only the selection.
+            installation.update_organization_config({REPOSITORIES_KEY: sorted(selection)})

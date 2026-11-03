@@ -74,6 +74,24 @@ def recorded_hook_ids(integration_id: int, repo_id: str, *, exclude_id: int | No
     }
 
 
+def _imported_rows(installation: Any) -> Any:
+    return Repository.objects.filter(
+        organization_id=installation.organization_id,
+        integration_id=installation.model.id,
+        provider=PROVIDER,
+        status__in=(ObjectStatus.ACTIVE, ObjectStatus.DISABLED),
+    )
+
+
+def imported_repository_ids(installation: Any) -> frozenset[int]:
+    """Gitea IDs of this organization's live Sentry repositories of the installation."""
+    return frozenset(
+        int(external_id)
+        for external_id in _imported_rows(installation).values_list("external_id", flat=True)
+        if external_id.isascii() and external_id.isdigit()
+    )
+
+
 def remove_unselected_repositories(installation: Any) -> None:
     """Schedule deletion of this organization's rows for repositories no longer selected.
 
@@ -84,13 +102,7 @@ def remove_unselected_repositories(installation: Any) -> None:
     selection = stored_selection(installation.org_integration.config)
     if selection is None:
         return
-    rows = Repository.objects.filter(
-        organization_id=installation.organization_id,
-        integration_id=installation.model.id,
-        provider=PROVIDER,
-        status__in=(ObjectStatus.ACTIVE, ObjectStatus.DISABLED),
-    )
-    for row in rows:
+    for row in _imported_rows(installation):
         if not row.external_id.isdigit() or is_selected(selection, row.external_id):
             continue
         with transaction.atomic(using=router.db_for_write(Repository)):

@@ -115,7 +115,8 @@ for the organization to use issue actions.
 
 The installation is identified by SHA-256 of `v1|<normalized base URL>|<user or org>|<owner numeric ID>`.
 Renaming an owner does not change its installation identity. Reinstalling the same owner rotates the
-stored OAuth identity and preserves the integration's webhook key.
+stored OAuth identity and preserves the integration's webhook key and its repository selection (see
+[Reinstalling](#reinstalling)).
 
 To upgrade or remove the integration, follow [Upgrade](../README.md#upgrade) and
 [Uninstall](../README.md#uninstall) in the README. Delete the repositories in Sentry before
@@ -144,7 +145,8 @@ Gitea issues access tokens that expire after one hour by default
   installation unused for longer than the refresh-token lifetime must be reinstalled. Keep that
   lifetime well above 7 days.
 - If the refresh token has expired or was revoked, operations fail with an error asking you to
-  reinstall. Reinstalling the same owner keeps the integration, its links and its webhook key.
+  reinstall. Reinstalling the same owner keeps the integration, its links, its webhook key and
+  its repository selection.
 - Leave `[oauth2] INVALIDATE_REFRESH_TOKENS` at its default `false`. With `true`, installations
   authorized by the same Gitea user share one grant, and each refresh invalidates the refresh
   tokens of the others.
@@ -250,7 +252,7 @@ without Gitea's built-in issue tracker can be added; they are only hidden from i
 
 The organization configuration key `repository_ids` holds the selection: a sorted list of at most
 1,000 numeric Gitea repository IDs. IDs, unlike `owner/name`, survive renames and transfers. The
-install picker always stores a list, possibly empty. The integration's settings page shows it as the
+first install always stores a list, possibly empty. The integration's settings page shows it as the
 **Repositories** multi-select, a Sentry `select` field with `multiple: true` whose choices are the
 owner's repositories the authorizing user administers. The API takes the same list:
 `POST /api/0/organizations/<org>/integrations/<integration id>/` with
@@ -274,6 +276,28 @@ a new row with a new hook at once, even before the old row's deletion runs.
 
 The selection does not limit issue forms: any repository of the installed owner can still be used to
 create and link issues.
+
+#### Reinstalling
+
+Sentry runs the whole install again for a reinstall, the documented recovery for an expired refresh
+token, so the picker appears again. For an owner already installed in the organization, the picker
+ticks the stored selection, or every listed repository for an installation without a stored
+selection, and the submit changes only what you change on that page:
+
+- A repository you untick is removed from the selection and its Sentry repository is deleted, as in
+  the settings.
+- A repository you tick is added.
+- A selected repository the picker does not list, because the reinstalling user does not administer
+  it, stays selected.
+- An installation without a stored selection keeps having none if you untick nothing. If you untick
+  a repository, it gets a stored selection: the repositories already imported into Sentry and
+  those still ticked, without the unticked ones. Repositories of the owner that were neither
+  imported nor listed are then no longer imported.
+
+A reinstall may change the selection because the page is the same picker as at install time and
+its ticks show the result, but a repository leaves the selection only when you untick it there.
+The first install of an owner in an organization starts with nothing ticked and stores exactly what
+you tick.
 
 Adding a repository creates exactly one Gitea repository hook: type `gitea`, JSON, active, all
 branches, for the events `push`, `issues_only`, `issue_assign` and `pull_request`, delivered to
@@ -437,8 +461,13 @@ repository:
    repository. The task keeps exactly Gitea's default branch (the remote `HEAD`) and the branch of
    every code mapping (`master` when empty, as Sentry defaults it) of every live Sentry repository
    sharing the mirror, deleting other refs. Fetches run with `gc.auto=0` and
-   `maintenance.auto=false`, so git never collects garbage inside a fetch's time limit; the task
-   runs `git gc --auto` after each clone or sync, within its own 25-minute limit. Adding a repository in Sentry queues the same task. Only selected repositories have
+   `maintenance.auto=false`, so git never collects garbage inside a fetch's time limit. The task
+   runs `git gc --auto` after each clone or sync, within its own 25-minute limit, even when the
+   sync failed. A blame on a mirror whose last gc is more than 24 hours old (the mtime of
+   `sentry-gitea-maintained` in the mirror) queues the task, which then syncs and collects
+   garbage; the blame itself goes on without waiting for it. The task also syncs to the mapped
+   refs, so it drops `refs/commits/<sha>` refs that earlier blames fetched. Adding a repository in
+   Sentry queues the same task. Only selected repositories have
    Sentry repositories, so nothing else is cloned.
 2. **Revision.** A full commit SHA the mirror already has is used directly. Anything else (a branch
    or tag name, or an unknown commit) fetches first, at most once every 5 minutes per mirror, then
@@ -482,8 +511,12 @@ OAuth token about to expire is refreshed within the same budget: the wait for th
 (otherwise up to 45 seconds) and the token request both end in time, or the refresh is skipped.
 When the budget runs out, blame returns what it found so far. A fetch that fails or runs out of
 time during blame, including one whose token could not be refreshed in time, queues the mirror
-task, which fetches again with the clone's time limit and refreshes the token if needed. A file lock next to each mirror (`<id>.lock`, kept after
-deletion) serializes clone, fetch and delete across processes. A clone goes to a temporary
+task, which fetches again with the clone's time limit and refreshes the token if needed. Blame
+queues at most one mirror task per mirror at a time: queueing creates `<id>.queued` next to the
+mirror, and blame does not queue while that file exists. The task removes it when it ends, so the
+next missing mirror, failed fetch or due gc queues a new task. A file left by a task that never
+ran stops blocking after 30 minutes, longer than a task may run. A file lock next to each mirror
+(`<id>.lock`, kept after deletion) serializes clone, fetch and delete across processes. A clone goes to a temporary
 directory and becomes the mirror through an atomic rename, so an interrupted clone never looks like
 a mirror; the next clone removes its leftovers.
 
