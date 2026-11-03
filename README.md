@@ -281,9 +281,13 @@ integration answers blame requests from a bare git mirror per added repository.
 
 How it behaves:
 
-- **Disk.** Each mirror is a full bare clone with all branches and tags, at
-  `<GITEA_BLAME_MIRROR_DIR>/<integration id>/<Gitea repository id>.git`. Plan for roughly the size
-  of the selected repositories in Gitea; unselected repositories are never cloned. Deleting the
+- **Disk.** Each mirror is a bare repository at
+  `<GITEA_BLAME_MIRROR_DIR>/<integration id>/<Gitea repository id>.git` with only what blame reads:
+  the repository's default branch, the branch or tag of each code mapping, and commits that blame
+  asked for by SHA. Plan for the history of those refs; unselected repositories are never cloned.
+  Git's automatic garbage collection never runs inside a fetch; the mirror task runs `git gc --auto`
+  after each clone or sync. A mirror cloned by an earlier version, with all branches and tags,
+  is pruned by the mirror task that its first blame queues. Deleting the
   repository in Sentry, or removing it from the selection, deletes its mirror, unless another
   organization still uses the same repository through the same installation.
 - **Cloning.** Adding a repository, or the first blame for it, queues the
@@ -292,10 +296,13 @@ How it behaves:
   on can miss a suspect commit.
 - **Fetching.** A blame at a commit the mirror already has needs no network. A branch name, such as
   the code mapping's default branch, fetches at most once every 5 minutes per mirror, and always on
-  the first blame after a push webhook for that repository.
+  the first blame after a push webhook for that repository. That fetch updates the requested
+  names and the refs the mirror already has, and nothing else. A code mapping on a branch or tag
+  the mirror does not have yet gets it at the next fetch, within 5 minutes.
 - **Credentials.** Git authenticates with the installation's OAuth token in an
   `Authorization: Bearer` header taken from the environment. The token is never written to the
-  mirror's configuration, and never appears in a process's arguments.
+  mirror's configuration, and never appears in a process's arguments. Git does not follow HTTP
+  redirects, so the header never reaches another host.
 - **Trade-off.** For a project with a Gitea code mapping, Sentry 26.10 then uses blame only and
   no longer falls back to release-based suspect commits. Sentry caches which providers an
   organization has for up to 4 hours, so turning the feature on or off takes effect within that

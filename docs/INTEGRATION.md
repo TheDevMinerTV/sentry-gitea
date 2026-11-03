@@ -174,7 +174,10 @@ inline code in the generated description, so they cannot @mention Gitea users or
 links. The form does not show the hidden `sentry-gitea-meta v1` block that identifies the Sentry
 issue: it carries signed context for the Sentry issue in a hidden field (valid for 24 hours), and
 the integration appends the block when it files the issue. Any block typed into the description
-is removed first, so an edited description can neither drop nor forge it. Before creating, the
+is removed first, so an edited description can neither drop nor forge it. Text that would still
+form a block afterwards (an unclosed block, or one that removing another block joined together)
+has its `sentry-gitea-meta` keyword rewritten as `sentry_gitea_meta`. Finding and removing blocks
+takes time linear in the description's length. Before creating, the
 integration searches the selected repository for an issue with that block; if it finds one, it
 links that issue instead of filing a duplicate. A create that failed after Gitea had already filed
 the issue, or a form submitted twice, therefore files one issue. This also applies after an
@@ -417,6 +420,12 @@ implements Sentry's commit-context interface by running `git blame` on a local m
 image has no `git`; install it in `sentry/enhance-image.sh` (see
 [`enhance-image.sh`](../docker/enhance-image.sh) and the README).
 
+With the setting off, the integration never runs git and never creates a mirror. Sentry can still
+ask it for blame: once any provider on Sentry's list (GitHub, GitLab) qualifies a project, Sentry
+asks every code mapping's integration that implements the commit-context interface, Gitea's
+included. The installation answers with no blame, and a `mirror_repository` task queued before the
+setting was turned off returns without work.
+
 For a new issue in a project with a Gitea code mapping, Sentry maps each in-app frame to a file and
 line on the mapping's branch and asks the integration for blame. The integration then works per
 repository:
@@ -425,13 +434,29 @@ repository:
    `<GITEA_BLAME_MIRROR_DIR>/<integration id>/<Gitea repository id>.git`. The Gitea repository ID
    survives renames. If the mirror does not exist yet, the
    `sentry_gitea.integration.mirror_repository` task clones it, and this blame skips the
-   repository. Adding a repository in Sentry queues the same task. Only selected repositories have
+   repository. The task keeps exactly Gitea's default branch (the remote `HEAD`) and the branch of
+   every code mapping (`master` when empty, as Sentry defaults it) of every live Sentry repository
+   sharing the mirror, deleting other refs. Fetches run with `gc.auto=0` and
+   `maintenance.auto=false`, so git never collects garbage inside a fetch's time limit; the task
+   runs `git gc --auto` after each clone or sync, within its own 25-minute limit. Adding a repository in Sentry queues the same task. Only selected repositories have
    Sentry repositories, so nothing else is cloned.
 2. **Revision.** A full commit SHA the mirror already has is used directly. Anything else (a branch
-   or tag name, or an unknown commit) fetches all branches and tags first, at most once every
-   5 minutes per mirror, then resolves the name. A push webhook for the repository lifts that limit
+   or tag name, or an unknown commit) fetches first, at most once every 5 minutes per mirror, then
+   resolves the name. The fetch asks Gitea (`git ls-remote`) for the branch and tag of each
+   requested name and of each ref the mirror already has, fetches those that exist with explicit
+   refspecs and `--no-tags`, and deletes local refs that Gitea no longer has (before fetching, so
+   a deleted branch `x` cannot block a new `x/y`). A mirror cloned by an earlier version, with
+   every branch and tag, fetches only the requested names and queues the mirror task, which
+   prunes it once. A commit SHA the
+   mirror lacks is fetched by SHA into `refs/commits/<sha>`; Gitea serves any reachable commit
+   that way over git's protocol v2. A push webhook for the repository lifts that limit
    for the next fetch, so an issue right after a push is not blamed on the branch's old head. An
-   unknown revision skips its frames.
+   unknown revision skips its frames. Sentry 26.10 asks for the code mapping's branch
+   (`default_branch`, or `master` when empty); release-based suspect commits never reach blame. A
+   name resolves to `refs/heads/<name>` first and `refs/tags/<name>` second, so a tag never hides
+   the branch of the same name. A full lowercase SHA is used as is. Other revision syntax does not
+   resolve: `main~1`, an abbreviated or uppercase SHA, or a fully qualified `refs/heads/main`
+   typed as a code mapping's branch.
 3. **Blame.** `git blame --line-porcelain` runs once per file, with one `-L n,n` per frame line.
    Author name and email, committer time and the commit summary become Sentry's `CommitInfo`.
    Missing files and lines past the end of a file are skipped.
@@ -443,17 +468,30 @@ Clones and fetches use `<GITEA_BASE_URL>/<owner>/<name>.git`, where `owner/name`
 repository ID through the API first. The installation's OAuth access token is refreshed if needed
 and passed as `http.extraHeader=Authorization: Bearer …` through git's `GIT_CONFIG_*` environment
 variables. It never appears in argv, in the mirror's `config` (which stores no remote at all), or
-in logs. Git runs with prompts, system and global configuration and hooks disabled. Timeouts kill
-git and its helper processes: 10 seconds for a local command, 30 seconds for a fetch during blame,
-25 minutes for a clone. One blame request stops starting git commands after 45 seconds, inside
-Sentry's 90-second task deadline. A fetch that fails during blame queues the mirror task, which
-fetches again with the clone's time limit. A file lock next to each mirror (`<id>.lock`, kept after
+in logs. Git runs with prompts, system and global configuration and hooks disabled, and with
+`http.followRedirects=false`: git would send the header to wherever Gitea redirects, so a redirect
+fails the clone or fetch instead. Gitea answers the URL built from the API's `full_name` without a
+redirect. Timeouts kill
+git and its helper processes: 10 seconds for a local command, 30 seconds for a fetch during blame
+(`ls-remote` and `fetch` together), 25 minutes for a clone. One blame request has a hard budget of
+45 seconds, half of Sentry's 90-second commit-context deadline, which other providers' blame in the
+same task shares. Every step checks the time left first and gets the smaller of its own limit and
+that time: each git command, the wait for the mirror lock (at most 10 seconds) and the Gitea API
+lookup of the repository, which must also be able to finish its last 15-second read in time. An
+OAuth token about to expire is refreshed within the same budget: the wait for the refresh lock
+(otherwise up to 45 seconds) and the token request both end in time, or the refresh is skipped.
+When the budget runs out, blame returns what it found so far. A fetch that fails or runs out of
+time during blame, including one whose token could not be refreshed in time, queues the mirror
+task, which fetches again with the clone's time limit and refreshes the token if needed. A file lock next to each mirror (`<id>.lock`, kept after
 deletion) serializes clone, fetch and delete across processes. A clone goes to a temporary
 directory and becomes the mirror through an atomic rename, so an interrupted clone never looks like
 a mirror; the next clone removes its leftovers.
 
 Deleting a repository in Sentry deletes its mirror once no other live Sentry repository of the same
-installation uses it. Uninstalling the integration does not; delete
+installation uses it. This also happens with blame off, so a mirror from an earlier period with blame
+on never outlives its repository; when there is no mirror, deletion creates nothing on disk. Push
+webhooks also mark an existing mirror stale while blame is off, so turning blame back on never blames
+on a branch head from before the pushes. Uninstalling the integration does not; delete
 `<GITEA_BLAME_MIRROR_DIR>/<integration id>/` yourself. Failures are logged as `sentry-gitea: blame failed` with an `operation` and
 IDs; Sentry then records no suspect commit for that issue.
 

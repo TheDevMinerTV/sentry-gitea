@@ -6,7 +6,8 @@ Registered through `TASKWORKER_IMPORTS += ("sentry_gitea.integration.tasks",)` i
 - `backfill_push` recovers commits that Gitea truncated from a push payload. Commits are
   upserted page by page, so a retry or a replayed delivery only repeats idempotent writes.
 - `mirror_repository` clones the bare git mirror that blame-based suspect commits read
-  (GITEA_BLAME_ENABLED), or fetches into an existing one when a fetch during blame failed.
+  (GITEA_BLAME_ENABLED), or syncs an existing one to the refs code mappings use when a fetch
+  during blame failed, then runs `git gc --auto`, which fetches never run.
 - `refresh_identities` keeps idle installations authorized: Gitea refresh tokens expire
   (`REFRESH_TOKEN_EXPIRATION_TIME`, 730 h by default) unless used. Operators schedule it with
   `TASKWORKER_SCHEDULES["gitea-identity-refresh"] = {"task":
@@ -22,6 +23,7 @@ from typing import Any
 from sentry.constants import ObjectStatus
 from sentry.identity.services.identity import identity_service
 from sentry.integrations.models.integration import Integration
+from sentry.integrations.models.repository_project_path_config import RepositoryProjectPathConfig
 from sentry.integrations.services.integration import integration_service
 from sentry.models.repository import Repository
 from sentry.shared_integrations.exceptions import ApiError, ApiUnauthorized, IntegrationError
@@ -33,10 +35,10 @@ from sentry_gitea.api.client import is_sha
 from sentry_gitea.api.webhooks import PayloadError, is_zero_sha, normalize_api_commit
 from sentry_gitea.mirror import CLONE_TIMEOUT, GitError
 
-from .blame import BLAME_FAILED, sync_mirror
+from .blame import BLAME_FAILED, blame_enabled, sync_mirror
 from .commits import store_commits
 from .identity import ConfigurationError, GiteaIdentityProvider, OAuthSettings, log_failure
-from .repository import PROVIDER, SYNC_FAILED, GiteaRepositoryProvider
+from .repository import GONE, PROVIDER, SYNC_FAILED, GiteaRepositoryProvider
 
 logger = logging.getLogger(__name__)
 BACKFILL_LIMIT = 1000
@@ -198,6 +200,18 @@ def refresh_identities() -> None:
     )
 
 
+def mapped_refs(repo: Repository) -> set[str]:
+    """The refs that Sentry blames at: the branch of each code mapping of every live repository
+    sharing this mirror, `master` when unset, as Sentry itself defaults it."""
+    sharing = Repository.objects.filter(
+        integration_id=repo.integration_id, provider=PROVIDER, external_id=repo.external_id
+    ).exclude(status__in=GONE)
+    branches = RepositoryProjectPathConfig.objects.filter(
+        project_repository__repository__in=sharing
+    ).values_list("default_branch", flat=True)
+    return {branch or "master" for branch in branches}
+
+
 @instrumented_task(
     name="sentry_gitea.integration.mirror_repository",
     namespace=integrations_tasks,
@@ -205,6 +219,8 @@ def refresh_identities() -> None:
     silo_mode=SiloMode.CELL,
 )
 def mirror_repository(repository_id: int) -> None:
+    if not blame_enabled():
+        return  # Queued before blame was turned off.
     repo = Repository.objects.filter(
         id=repository_id, provider=PROVIDER, status=ObjectStatus.ACTIVE
     ).first()
@@ -214,6 +230,6 @@ def mirror_repository(repository_id: int) -> None:
         installation = GiteaRepositoryProvider(PROVIDER).get_installation(
             repo.integration_id, repo.organization_id
         )
-        sync_mirror(installation, repo)
+        sync_mirror(installation, repo, mapped_refs(repo))
     except (GitError, ApiError, IntegrationError, OSError) as error:
         log_failure(logger, BLAME_FAILED, error, operation="mirror", repository_id=repository_id)

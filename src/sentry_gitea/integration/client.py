@@ -22,6 +22,7 @@ from sentry.shared_integrations.exceptions import (
 
 from sentry_gitea.api.client import (
     OPERATION_BUDGET,
+    TIMEOUT,
     CommitRange,
     GiteaClient,
     git_ref,
@@ -79,6 +80,8 @@ class GiteaIntegrationClient(RepositoryClient):
         self.author_id = identity_user_id(getattr(identity, "external_id", None))
         # At most one refresh (proactive or after a 401) per client, i.e. per operation.
         self.refresh_attempted = False
+        # Set by bound_by: a refresh must then end by the same deadline as every request.
+        self.refresh_deadline: float | None = None
         self.metadata = installation.model.metadata
         self.base_url = self.metadata["base_url"]
         self.repositories: dict[str, dict[str, Any]] = {}
@@ -97,6 +100,13 @@ class GiteaIntegrationClient(RepositoryClient):
         """Long background operations (release ranges, backfills) get their own budget."""
         self.deadline = time.monotonic() + seconds
 
+    def bound_by(self, deadline: float) -> None:
+        """No request, and no token refresh with its lock wait, may end after `deadline`."""
+        # A request starts only with REQUEST_ALLOWANCE left, but one read may block for the read
+        # timeout after the last deadline check.
+        self.deadline = min(self.deadline, deadline - TIMEOUT[1])
+        self.refresh_deadline = self.deadline
+
     def _identity(self) -> Any:
         identity = identity_service.get_identity(filter={"id": self.identity_id})
         if identity is None or not identity.data.get("access_token"):
@@ -111,7 +121,9 @@ class GiteaIntegrationClient(RepositoryClient):
         self.refresh_attempted = True
         try:
             GiteaIdentityProvider().refresh_identity(
-                identity, failed_access_token=identity.data["access_token"]
+                identity,
+                failed_access_token=identity.data["access_token"],
+                deadline=self.refresh_deadline,
             )
         except ApiUnauthorized:
             # Logged by refresh_identity. An expired token cannot succeed: say "reinstall" now.
@@ -139,7 +151,9 @@ class GiteaIntegrationClient(RepositoryClient):
             except GiteaApiError as error:
                 if error.status == 401 and attempt == 0 and not self.refresh_attempted:
                     self.refresh_attempted = True
-                    GiteaIdentityProvider().refresh_identity(identity, failed_access_token=token)
+                    GiteaIdentityProvider().refresh_identity(
+                        identity, failed_access_token=token, deadline=self.refresh_deadline
+                    )
                     if not write:
                         continue
                     # Renew for the next explicit action, but never replay an ambiguous write.
